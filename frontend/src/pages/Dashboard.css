@@ -1,1 +1,8 @@
-/* Dashboard styles are now handled by Tailwind CSS directly in the component */ 
+/* Dashboard styles are now handled by Tailwind CSS directly in the component */
+/* 
+This allows for:
+1. Component-scoped styling
+2. Better maintainability
+3. Consistent design system
+4. Responsive design through utility classes
+*/ 
