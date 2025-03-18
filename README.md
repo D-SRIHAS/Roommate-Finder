@@ -63,6 +63,16 @@ A web application to help users find compatible roommates based on their prefere
 
 ### Running the application
 
+#### Option 1: Using the convenience script (recommended)
+
+Run both servers with one command:
+```
+./start-servers.sh
+```
+This will start both backend and frontend servers and provide a convenient way to stop them with Ctrl+C.
+
+#### Option 2: Running servers separately
+
 1. Start the backend server
    ```
    cd backend
