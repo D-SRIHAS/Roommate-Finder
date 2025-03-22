@@ -74,47 +74,67 @@ router.post("/register", async (req, res) => {
   }
 });
 
-// ✅ Login User
+// ✅ Login User - Completely rewritten with direct bcrypt comparison
 router.post("/login", async (req, res) => {
   let { email, password } = req.body;
 
   try {
     console.log("📩 Login request received");
 
-    email = email.trim().toLowerCase();
+    if (!email || !password) {
+      console.log("❌ Missing email or password");
+      return res.status(400).json({ message: "Email and password are required" });
+    }
 
+    email = email.trim().toLowerCase();
+    console.log("🔍 Looking for user with email:", email);
+
+    // Find user without using methods
     const user = await User.findOne({ email });
     if (!user) {
       console.log("❌ User not found with email:", email);
       return res.status(400).json({ message: "Invalid email or password" });
     }
 
-    console.log("🔑 Attempting password comparison...");
-    console.log("Email:", email);
-    console.log("Password provided:", password);
+    console.log("✅ User found:", user.username);
+    console.log("🔑 Attempting password comparison with bcrypt directly...");
     
-    // Direct comparison for testing purposes
-    const plainPassword = "Test123!";
-    const result = await bcrypt.compare(plainPassword, user.password);
-    console.log("Test comparison with 'Test123!':", result);
+    // Log info for debugging
+    console.log("📏 Input password length:", password.length);
+    console.log("📏 Stored password length:", user.password.length);
+    console.log("📏 Input password:", password);
     
-    const isMatch = await user.comparePassword(password);
-    console.log("🔍 Password match result:", isMatch);
-
-    if (!isMatch) {
-      console.log("❌ Password does not match for:", email);
-      return res.status(400).json({ message: "Invalid email or password" });
+    // Direct comparison using bcrypt
+    try {
+      const isMatch = await bcrypt.compare(password, user.password);
+      console.log("🔍 Password match result:", isMatch);
+  
+      if (!isMatch) {
+        console.log("❌ Password does not match for:", email);
+        return res.status(400).json({ message: "Invalid email or password" });
+      }
+    } catch (compareError) {
+      console.error("🚨 Error comparing passwords:", compareError);
+      return res.status(500).json({ message: "Error verifying credentials" });
     }
 
     // Generate JWT securely
     const token = jwt.sign(
       { userId: user._id, email: user.email },
       process.env.JWT_SECRET,
-      { expiresIn: "1h" }
+      { expiresIn: "24h" }
     );
 
     console.log("✅ Login successful for:", email);
-    res.status(200).json({ message: "Login successful", token });
+    res.status(200).json({ 
+      message: "Login successful", 
+      token,
+      user: {
+        _id: user._id,
+        username: user.username,
+        email: user.email
+      }
+    });
   } catch (err) {
     console.error("🚨 Login error:", err);
     res.status(500).json({ message: "Internal server error", error: err.message });

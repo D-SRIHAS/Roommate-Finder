@@ -56,7 +56,8 @@ const Dashboard = () => {
 
   useEffect(() => {
     fetchData();
-  }, [fetchData]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Intentionally leaving dependency array empty to avoid infinite loop
 
   const handleSendFriendRequest = async (userId) => {
     try {

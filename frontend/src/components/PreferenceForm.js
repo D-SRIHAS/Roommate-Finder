@@ -12,13 +12,13 @@ const PreferenceForm = ({ onSubmit }) => {
   });
 
   const preferenceOptions = {
-    cleanliness: ['Very Clean', 'Clean', 'Moderately Clean', 'Relaxed'],
-    smoking: ['No Smoking', 'Outside Only', 'Yes'],
-    pets: ['No Pets', 'Has Pets', 'Pet Friendly'],
-    workSchedule: ['Early Bird', 'Night Owl', 'Regular Hours', 'Flexible'],
-    socialLevel: ['Very Social', 'Moderately Social', 'Private', 'Varies'],
-    guestPreference: ['No Guests', 'Occasional Guests', 'Frequent Guests'],
-    music: ['Quiet Environment', 'With Headphones', 'Shared Music OK']
+    cleanliness: ['Very Clean', 'Moderately Clean', 'Somewhat Messy', 'Messy'],
+    smoking: ['No Smoking', 'Outside Only', 'Smoking Friendly'],
+    pets: ['No Pets', 'Pet Friendly', 'Has Pets'],
+    workSchedule: ['Regular Hours', 'Flexible Hours', 'Night Owl'],
+    socialLevel: ['Very Social', 'Moderately Social', 'Occasionally Social', 'Not Social'],
+    guestPreference: ['Frequent Guests', 'Occasional Guests', 'Rare Guests', 'No Guests'],
+    music: ['Shared Music OK', 'With Headphones', 'Quiet Environment']
   };
 
   const handleChange = (category, value) => {

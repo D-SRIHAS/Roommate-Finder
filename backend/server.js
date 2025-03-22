@@ -20,6 +20,16 @@ const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 app.set('wss', wss);
 
+// Helper function to clear expired token from browser
+const sendClearTokenMessage = (ws) => {
+  ws.send(JSON.stringify({
+    type: 'auth_error',
+    error: 'token_expired',
+    message: 'Your session has expired. Please log in again.',
+    action: 'clear_token'
+  }));
+};
+
 wss.on('connection', (ws, req) => {
   console.log('New WebSocket connection');
 
@@ -32,14 +42,52 @@ wss.on('connection', (ws, req) => {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
       ws.userId = decoded.userId;
       console.log('WebSocket connection authenticated for user:', ws.userId);
+      
+      // Send a successful connection message
+      ws.send(JSON.stringify({
+        type: 'connection',
+        status: 'success',
+        message: 'Successfully connected to WebSocket server'
+      }));
     } catch (error) {
       console.error('WebSocket authentication error:', error);
-      ws.close();
+      
+      // Send appropriate error message to client
+      if (error.name === 'TokenExpiredError') {
+        sendClearTokenMessage(ws);
+      } else {
+        ws.send(JSON.stringify({
+          type: 'error',
+          code: 'AUTH_FAILED',
+          message: 'Authentication failed. Please log in again.'
+        }));
+      }
+      
+      // Close connection with appropriate code
+      ws.close(1000, 'Authentication failed');
     }
+  } else {
+    console.error('No token provided for WebSocket connection');
+    ws.send(JSON.stringify({
+      type: 'error',
+      code: 'NO_TOKEN',
+      message: 'No authentication token provided'
+    }));
+    ws.close(1000, 'No authentication token');
   }
 
   ws.on('message', (message) => {
     console.log('Received:', message);
+    // Echo the message back for testing
+    try {
+      const parsedMessage = JSON.parse(message);
+      ws.send(JSON.stringify({
+        type: 'echo',
+        data: parsedMessage
+      }));
+    } catch (e) {
+      console.error('Error parsing message:', e);
+    }
   });
 
   ws.on('close', () => {

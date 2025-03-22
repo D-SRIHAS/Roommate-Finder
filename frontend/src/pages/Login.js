@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import axios from "axios";
 
 console.log("Login Component is Rendering ✅");
 
@@ -7,33 +8,57 @@ const Login = () => {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [message, setMessage] = useState("");
+  const [isSuccess, setIsSuccess] = useState(false);
+  const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-
+    setMessage("");
+    setLoading(true);
+    
+    // Trim inputs
+    const trimmedEmail = email.trim().toLowerCase();
+    
     try {
-      // Use direct-login endpoint for testing
-      const response = await fetch("http://localhost:5002/api/auth/direct-login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email }),
+      // Clear any existing token to handle expired tokens
+      localStorage.removeItem('token');
+      
+      console.log("Attempting login with:", { email: trimmedEmail, password });
+      
+      const response = await axios.post("http://localhost:5002/api/auth/login", {
+        email: trimmedEmail,
+        password
       });
 
-      const data = await response.json();
-      console.log("Login Response:", data);
+      console.log("Login Response:", response.data);
 
-      if (response.ok) {
-        // Save token to localStorage
-        localStorage.setItem('token', data.token);
-        setMessage("✅ Login successful! Redirecting...");
-        setTimeout(() => navigate("/dashboard"), 1500);
-      } else {
-        setMessage(data.message || "❌ Invalid credentials. Try again.");
-      }
+      // Successfully logged in
+      localStorage.setItem('token', response.data.token);
+      setIsSuccess(true);
+      setMessage("✅ Login successful! Redirecting...");
+      setTimeout(() => navigate("/dashboard"), 1500);
     } catch (error) {
       console.error("Login Error:", error);
-      setMessage("❌ An error occurred. Please try again.");
+      setIsSuccess(false);
+      
+      if (error.response) {
+        // The request was made and the server responded with a status code
+        // that falls out of the range of 2xx
+        if (error.response.status === 400) {
+          setMessage("❌ Invalid email or password. Try again.");
+        } else {
+          setMessage(error.response.data.message || "❌ An error occurred. Please try again.");
+        }
+      } else if (error.request) {
+        // The request was made but no response was received
+        setMessage("❌ Could not connect to the server. Please check your internet connection.");
+      } else {
+        // Something happened in setting up the request that triggered an Error
+        setMessage("❌ An error occurred. Please try again.");
+      }
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -56,6 +81,7 @@ const Login = () => {
               onChange={(e) => setEmail(e.target.value)}
               required
               className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-400 transition"
+              disabled={loading}
             />
           </div>
 
@@ -67,19 +93,21 @@ const Login = () => {
               onChange={(e) => setPassword(e.target.value)}
               required
               className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-400 transition"
+              disabled={loading}
             />
           </div>
 
           <button
             type="submit"
-            className="w-full bg-blue-600 text-white py-2 rounded-lg transition-all transform hover:scale-105 hover:shadow-lg"
+            className={`w-full bg-blue-600 text-white py-2 rounded-lg transition-all transform hover:scale-105 hover:shadow-lg ${loading ? 'opacity-70 cursor-not-allowed' : ''}`}
+            disabled={loading}
           >
-            Log In
+            {loading ? 'Logging in...' : 'Log In'}
           </button>
         </form>
 
         {message && (
-          <p className="text-center text-red-500 font-semibold mt-4">
+          <p className={`text-center font-semibold mt-4 ${isSuccess ? 'text-green-600' : 'text-red-500'}`}>
             {message}
           </p>
         )}

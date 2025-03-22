@@ -1,5 +1,6 @@
 import React, { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
+import axios from "axios";
 
 console.log("Signup Component is Rendering ✅");
 
@@ -8,30 +9,44 @@ const Signup = () => {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [message, setMessage] = useState("");
+  const [isSuccess, setIsSuccess] = useState(false);
+  const navigate = useNavigate();
 
   const handleSubmit = async (e) => {
     e.preventDefault();
 
-    const userData = { username, email, password };
+    // Trim inputs
+    const userData = { 
+      username: username.trim(), 
+      email: email.trim().toLowerCase(), 
+      password 
+    };
+
+    // Validate password strength
+    if (password.length < 6) {
+      setMessage("Password must be at least 6 characters long");
+      setIsSuccess(false);
+      return;
+    }
 
     try {
-      const response = await fetch("http://localhost:5002/api/auth/register", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(userData),
-      });
+      const response = await axios.post("http://localhost:5002/api/auth/register", userData);
 
-      const data = await response.json();
-      console.log("Signup Response:", data);
+      console.log("Signup Response:", response.data);
 
-      if (response.ok) {
-        setMessage("✅ Signup successful! Please log in.");
+      if (response.status === 201) {
+        setMessage("✅ Signup successful! Redirecting to login...");
+        setIsSuccess(true);
+        // Redirect to login page after 2 seconds
+        setTimeout(() => navigate("/login"), 2000);
       } else {
-        setMessage(data.message || "❌ Signup failed. Try again.");
+        setMessage(response.data.message || "❌ Signup failed. Try again.");
+        setIsSuccess(false);
       }
     } catch (error) {
       console.error("Signup Error:", error);
-      setMessage("❌ An error occurred. Please try again.");
+      setMessage(error.response?.data?.message || "❌ An error occurred. Please try again.");
+      setIsSuccess(false);
     }
   };
 
@@ -79,8 +94,10 @@ const Signup = () => {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
+              minLength="6"
               className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-400 transition"
             />
+            <p className="text-xs text-gray-500 mt-1">Must be at least 6 characters</p>
           </div>
 
           <button
@@ -92,9 +109,9 @@ const Signup = () => {
           </button>
         </form>
 
-        {/* Signup Success Message */}
+        {/* Signup Message */}
         {message && (
-          <p className="text-center text-green-600 font-semibold mt-4">
+          <p className={`text-center font-semibold mt-4 ${isSuccess ? 'text-green-600' : 'text-red-500'}`}>
             {message}
           </p>
         )}

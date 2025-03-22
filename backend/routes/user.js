@@ -252,57 +252,48 @@ const calculateJaccardSimilarity = (user1Prefs, user2Prefs) => {
   return intersection / union;
 };
 
-// Update the match finding route to use both similarity measures
-router.get("/matches", authMiddleware, async (req, res) => {
+// Get matches with profile information
+router.get('/matches', authMiddleware, async (req, res) => {
   try {
-    console.log("Finding matches for user:", req.user.userId);
-    const currentUser = await User.findById(req.user.userId);
+    const userId = req.user.userId;
+    const currentUser = await User.findById(userId);
     
-    if (!currentUser) {
-      return res.status(404).json({ message: "User not found" });
-    }
-    
-    // Only find matches if user has preferences
     if (!currentUser.preferences || !currentUser.profileCompleted) {
-      return res.status(400).json({ 
-        message: "Please complete your preferences before finding matches" 
-      });
+      return res.status(400).json({ message: "Please complete your preferences first" });
     }
     
-    // Find all users except current user
+    // Find all users except current user who have completed their profiles
     const potentialMatches = await User.find({
-      _id: { $ne: currentUser._id },
+      _id: { $ne: userId },
       profileCompleted: true
     });
     
-    // Calculate match scores using both cosine and Jaccard similarity
-    const matches = potentialMatches.map(match => {
-      const cosineSim = calculateCosineSimilarity(currentUser.preferences, match.preferences);
-      const jaccardSim = calculateJaccardSimilarity(currentUser.preferences, match.preferences);
+    const matchesWithScores = potentialMatches.map(user => {
+      const cosineSimilarity = calculateCosineSimilarity(currentUser.preferences, user.preferences);
+      const jaccardSimilarity = calculateJaccardSimilarity(currentUser.preferences, user.preferences);
       
-      // Weighted combination of both similarity measures (adjustable weights)
-      const combinedScore = (cosineSim * 0.7) + (jaccardSim * 0.3);
-      
-      // Convert to percentage
-      const matchPercentage = Math.round(combinedScore * 100);
+      // Use weighted combination of both similarity measures
+      const combinedScore = (cosineSimilarity * 0.7) + (jaccardSimilarity * 0.3);
       
       return {
-        userId: match._id,
-        username: match.username,
-        preferences: match.preferences,
-        matchPercentage: matchPercentage,
-        cosineSimilarity: Math.round(cosineSim * 100),
-        jaccardSimilarity: Math.round(jaccardSim * 100)
+        _id: user._id,
+        userId: user._id,
+        username: user.username,
+        profile: user.profile, // Include the user's profile
+        preferences: user.preferences,
+        matchPercentage: Math.round(combinedScore * 100),
+        cosineSimilarity: Math.round(cosineSimilarity * 100),
+        jaccardSimilarity: Math.round(jaccardSimilarity * 100)
       };
     });
     
     // Sort by match percentage (highest first)
-    matches.sort((a, b) => b.matchPercentage - a.matchPercentage);
+    const sortedMatches = matchesWithScores.sort((a, b) => b.matchPercentage - a.matchPercentage);
     
-    res.json({ matches });
+    res.status(200).json({ matches: sortedMatches });
   } catch (error) {
-    console.error("Error finding matches:", error);
-    res.status(500).json({ message: "Error finding matches" });
+    console.error('Error finding matches:', error);
+    res.status(500).json({ message: 'Error finding matches' });
   }
 });
 
@@ -360,58 +351,61 @@ router.post('/friend-request', authMiddleware, async (req, res) => {
   }
 });
 
-// Respond to friend request (accept or reject)
+// Handle friend request response (accept/reject)
 router.post("/friend-request-response", authMiddleware, async (req, res) => {
   try {
-    console.log("📩 Friend request response received");
-    const { requestId, action } = req.body;
     const userId = req.user.userId;
+    const { requestId, action } = req.body;
     
-    if (!['accept', 'reject'].includes(action)) {
-      return res.status(400).json({ message: "Invalid action. Use 'accept' or 'reject'" });
+    if (!requestId || !action) {
+      return res.status(400).json({ message: "Missing required fields" });
     }
     
-    // Find the current user
-    const currentUser = await User.findById(userId);
-    
-    if (!currentUser) {
+    // Find the user
+    const user = await User.findById(userId);
+    if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
     
-    // Find the friend request
-    const requestIndex = currentUser.friendRequests.findIndex(
-      (request) => request._id.toString() === requestId
+    // Find the request in the user's friend requests
+    const requestIndex = user.friendRequests.findIndex(
+      request => request._id.toString() === requestId
     );
     
     if (requestIndex === -1) {
       return res.status(404).json({ message: "Friend request not found" });
     }
     
-    const request = currentUser.friendRequests[requestIndex];
-    const fromUserId = request.from;
+    const request = user.friendRequests[requestIndex];
     
-    // Process the action
     if (action === 'accept') {
-      // Add both users to each other's friends list
-      currentUser.friends.push(fromUserId);
-      
-      // Find the other user and add current user to their friends list
-      const fromUser = await User.findById(fromUserId);
-      if (fromUser) {
-        fromUser.friends.push(userId);
-        await fromUser.save();
+      // Add to friends list for both users
+      if (!user.friends.includes(request.from)) {
+        user.friends.push(request.from);
       }
+      
+      // Add the current user to the requester's friends list
+      const requester = await User.findById(request.from);
+      if (requester && !requester.friends.includes(userId)) {
+        requester.friends.push(userId);
+        await requester.save();
+      }
+      
+      // Update request status
+      user.friendRequests[requestIndex].status = 'accepted';
+    } else if (action === 'reject') {
+      // Update request status
+      user.friendRequests[requestIndex].status = 'rejected';
+    } else {
+      return res.status(400).json({ message: "Invalid action" });
     }
     
-    // Remove the request regardless of action
-    currentUser.friendRequests.splice(requestIndex, 1);
-    await currentUser.save();
+    await user.save();
     
-    console.log(`✅ Friend request ${action}ed successfully`);
-    res.status(200).json({ message: `Connection request ${action}ed successfully` });
+    res.status(200).json({ message: `Friend request ${action}ed successfully` });
   } catch (error) {
-    console.error(`❌ Error ${req.body.action}ing friend request:`, error);
-    res.status(500).json({ message: `Error processing connection request response` });
+    console.error("Error handling friend request response:", error);
+    res.status(500).json({ message: "Error handling friend request response" });
   }
 });
 
@@ -434,52 +428,6 @@ router.get("/friends", authMiddleware, async (req, res) => {
   } catch (error) {
     console.error("❌ Error getting friends list:", error);
     res.status(500).json({ message: "Error retrieving connections" });
-  }
-});
-
-// Updated: Get matches with profile information
-router.get('/matches', authMiddleware, async (req, res) => {
-  try {
-    const userId = req.user.userId;
-    const currentUser = await User.findById(userId);
-    
-    if (!currentUser.preferences || !currentUser.profileCompleted) {
-      return res.status(400).json({ message: "Please complete your preferences first" });
-    }
-    
-    // Find all users except current user who have completed their profiles
-    const potentialMatches = await User.find({
-      _id: { $ne: userId },
-      profileCompleted: true
-    });
-    
-    const matchesWithScores = potentialMatches.map(user => {
-      const matchScore = calculateMatchScore(currentUser.preferences, user.preferences);
-      const cosineSimilarity = calculateCosineSimilarity(currentUser.preferences, user.preferences);
-      const jaccardSimilarity = calculateJaccardSimilarity(currentUser.preferences, user.preferences);
-      
-      // Use weighted combination of both similarity measures
-      const combinedScore = (cosineSimilarity * 0.7) + (jaccardSimilarity * 0.3);
-      
-      return {
-        _id: user._id,
-        userId: user._id,
-        username: user.username,
-        profile: user.profile, // Include the user's profile
-        preferences: user.preferences,
-        matchPercentage: Math.round(combinedScore * 100),
-        cosineSimilarity: Math.round(cosineSimilarity * 100),
-        jaccardSimilarity: Math.round(jaccardSimilarity * 100)
-      };
-    });
-    
-    // Sort by match percentage (highest first)
-    const sortedMatches = matchesWithScores.sort((a, b) => b.matchPercentage - a.matchPercentage);
-    
-    res.status(200).json({ matches: sortedMatches });
-  } catch (error) {
-    console.error('Error finding matches:', error);
-    res.status(500).json({ message: 'Error finding matches' });
   }
 });
 
@@ -546,66 +494,6 @@ router.post('/unfriend', authMiddleware, async (req, res) => {
   } catch (error) {
     console.error("❌ Error removing friend:", error);
     res.status(500).json({ message: 'Error removing friend' });
-  }
-});
-
-// Send friend request
-router.post("/friend-request", authMiddleware, async (req, res) => {
-  try {
-    console.log("📩 Friend request received");
-    const fromUserId = req.user.userId;
-    const toUserId = req.body.userId;
-    
-    console.log("From:", fromUserId);
-    console.log("To:", toUserId);
-
-    // Find both users
-    const fromUser = await User.findById(fromUserId);
-    const toUser = await User.findById(toUserId);
-
-    if (!fromUser || !toUser) {
-      return res.status(404).json({ message: "User not found" });
-    }
-
-    // Check if friend request already exists
-    const existingRequest = toUser.friendRequests.find(
-      request => request.from.toString() === fromUserId && request.status === 'pending'
-    );
-
-    if (existingRequest) {
-      return res.status(400).json({ message: "Friend request already sent" });
-    }
-
-    // Add friend request
-    toUser.friendRequests.push({
-      from: fromUserId,
-      status: 'pending'
-    });
-
-    await toUser.save();
-
-    // Get WebSocket server instance
-    const wss = req.app.get('wss');
-    if (wss) {
-      // Find the target user's WebSocket connection
-      const targetConnection = Array.from(wss.clients).find(
-        client => client.userId === toUserId
-      );
-
-      if (targetConnection) {
-        // Send notification
-        targetConnection.send(JSON.stringify({
-          type: 'friendRequest',
-          fromUserId: fromUserId,
-          message: `New friend request from ${fromUser.username}`
-        }));
-      }
-    }
-
-    res.status(200).json({ message: "Friend request sent successfully" });
-  } catch (error) {
-    console.error("Error sending friend request:", error);
-    res.status(500).json({ message: "Error sending friend request" });
   }
 });
 
