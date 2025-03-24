@@ -108,19 +108,50 @@ const userSchema = new mongoose.Schema({
       default: Date.now
     }
   }],
+  messages: [{
+    conversationId: {
+      type: String,
+      required: true
+    },
+    sender: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true
+    },
+    recipient: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true
+    },
+    text: {
+      type: String,
+      required: true
+    },
+    timestamp: {
+      type: Date,
+      default: Date.now
+    },
+    read: {
+      type: Boolean,
+      default: false
+    }
+  }],
 }, {
   timestamps: true
 });
 
 // Hash password before saving
 userSchema.pre('save', async function(next) {
-  if (!this.isModified('password')) return next();
+  // If validateBeforeSave is set to false, it means we're manually handling the password
+  if (this._skipValidation || !this.isModified('password')) {
+    return next();
+  }
   
   try {
-    console.log('Hashing password for user:', this.email);
+    console.log('Hashing password in pre-save hook for user:', this.email);
     const salt = await bcrypt.genSalt(10);
     this.password = await bcrypt.hash(this.password, salt);
-    console.log('Password hashed successfully');
+    console.log('Password hashed successfully in pre-save hook');
     next();
   } catch (error) {
     console.error('Error hashing password:', error);

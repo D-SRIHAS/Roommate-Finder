@@ -10,52 +10,35 @@ const Login = () => {
   const [message, setMessage] = useState("");
   const [isSuccess, setIsSuccess] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
   const navigate = useNavigate();
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setMessage("");
-    setLoading(true);
-    
-    // Trim inputs
-    const trimmedEmail = email.trim().toLowerCase();
     
     try {
-      // Clear any existing token to handle expired tokens
+      setLoading(true);
+      setError(null);
+      
+      // Clear any existing token first
       localStorage.removeItem('token');
       
-      console.log("Attempting login with:", { email: trimmedEmail, password });
-      
-      const response = await axios.post("http://localhost:5002/api/auth/login", {
-        email: trimmedEmail,
+      const response = await axios.post('http://localhost:5002/api/auth/login', {
+        email,
         password
       });
-
-      console.log("Login Response:", response.data);
-
-      // Successfully logged in
-      localStorage.setItem('token', response.data.token);
-      setIsSuccess(true);
-      setMessage("✅ Login successful! Redirecting...");
-      setTimeout(() => navigate("/dashboard"), 1500);
-    } catch (error) {
-      console.error("Login Error:", error);
-      setIsSuccess(false);
       
-      if (error.response) {
-        // The request was made and the server responded with a status code
-        // that falls out of the range of 2xx
-        if (error.response.status === 400) {
-          setMessage("❌ Invalid email or password. Try again.");
-        } else {
-          setMessage(error.response.data.message || "❌ An error occurred. Please try again.");
-        }
-      } else if (error.request) {
-        // The request was made but no response was received
-        setMessage("❌ Could not connect to the server. Please check your internet connection.");
+      // Store token in localStorage
+      localStorage.setItem('token', response.data.token);
+      
+      // Navigate to dashboard
+      navigate('/dashboard');
+    } catch (err) {
+      console.error('Login error:', err);
+      if (err.response && err.response.data && err.response.data.message) {
+        setError(err.response.data.message);
       } else {
-        // Something happened in setting up the request that triggered an Error
-        setMessage("❌ An error occurred. Please try again.");
+        setError('Failed to login. Please try again.');
       }
     } finally {
       setLoading(false);
@@ -106,9 +89,9 @@ const Login = () => {
           </button>
         </form>
 
-        {message && (
-          <p className={`text-center font-semibold mt-4 ${isSuccess ? 'text-green-600' : 'text-red-500'}`}>
-            {message}
+        {error && (
+          <p className="text-center font-semibold mt-4 text-red-500">
+            {error}
           </p>
         )}
 

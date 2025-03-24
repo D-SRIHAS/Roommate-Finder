@@ -13,6 +13,7 @@ const Profile = () => {
   const [photo, setPhoto] = useState(null);
   const [photoPreview, setPhotoPreview] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [isNewUser, setIsNewUser] = useState(false);
 
   useEffect(() => {
     fetchUserProfile();
@@ -43,6 +44,10 @@ const Profile = () => {
         throw new Error(data.message || 'Failed to fetch profile');
       }
 
+      // Check if profile is new/empty
+      const profileEmpty = !data.profile.fullName && !data.profile.bio && !data.profile.address;
+      setIsNewUser(profileEmpty);
+
       // If profile data exists, populate the form
       if (data.profile) {
         setFormData({
@@ -54,7 +59,7 @@ const Profile = () => {
         });
         
         if (data.profile.photoUrl) {
-          setPhotoPreview(data.profile.photoUrl);
+          setPhotoPreview(`http://localhost:5002${data.profile.photoUrl}`);
         }
       }
       
@@ -83,8 +88,11 @@ const Profile = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    console.log('Form submitted, data:', formData);
-    console.log('Photo file:', photo);
+    
+    if (!formData.fullName || !formData.address) {
+      alert('Please fill in at least your full name and address');
+      return;
+    }
     
     try {
       const token = localStorage.getItem('token');
@@ -99,18 +107,12 @@ const Profile = () => {
       
       // Add profile data as JSON
       formDataToSend.append('profile', JSON.stringify(formData));
-      console.log('JSON profile data added to FormData');
       
       // Add photo if it exists
       if (photo) {
         formDataToSend.append('photo', photo);
-        console.log('Photo added to FormData');
       }
       
-      // Make sure we're connecting to the correct backend port (5002)
-      console.log('Sending profile update request to:', 'http://localhost:5002/api/user/profile');
-      
-      // Don't set Content-Type header when sending FormData
       const response = await fetch('http://localhost:5002/api/user/profile', {
         method: 'PUT',
         headers: {
@@ -119,13 +121,16 @@ const Profile = () => {
         body: formDataToSend
       });
       
-      console.log('Response status:', response.status);
       const data = await response.json();
-      console.log('Response data:', data);
       
       if (response.ok) {
         alert('Profile updated successfully!');
-        navigate('/dashboard');
+        // If this is the first profile setup, redirect to the preferences tab
+        if (isNewUser) {
+          navigate('/dashboard', { state: { redirectToPreferences: true } });
+        } else {
+          navigate('/dashboard');
+        }
       } else {
         throw new Error(data.message || 'Failed to update profile');
       }
@@ -148,7 +153,22 @@ const Profile = () => {
   return (
     <div className="min-h-screen bg-gray-100 py-10">
       <div className="max-w-3xl mx-auto bg-white rounded-lg shadow-md p-8">
-        <h1 className="text-3xl font-bold text-center mb-8">Your Profile</h1>
+        <h1 className="text-3xl font-bold text-center mb-8">
+          {isNewUser ? 'Complete Your Profile' : 'Edit Your Profile'}
+        </h1>
+        
+        {isNewUser && (
+          <div className="bg-blue-50 p-4 rounded-md border border-blue-200 mb-6">
+            <h2 className="font-semibold text-blue-800 text-lg">Welcome to Roommate Finder!</h2>
+            <p className="text-blue-700 mt-1">
+              Let's set up your profile so potential roommates can learn more about you.
+              Please fill out the form below with your information.
+            </p>
+            <p className="text-blue-700 mt-2">
+              <strong>Required fields:</strong> Full Name and Address
+            </p>
+          </div>
+        )}
         
         <form onSubmit={handleSubmit} className="space-y-6">
           <div className="flex flex-col items-center mb-6">
@@ -179,7 +199,7 @@ const Profile = () => {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
               <label className="block text-gray-700 mb-2" htmlFor="fullName">
-                Full Name
+                Full Name <span className="text-red-500">*</span>
               </label>
               <input
                 type="text"
@@ -222,7 +242,7 @@ const Profile = () => {
             
             <div>
               <label className="block text-gray-700 mb-2" htmlFor="address">
-                Address
+                Address <span className="text-red-500">*</span>
               </label>
               <input
                 type="text"
@@ -251,20 +271,25 @@ const Profile = () => {
             ></textarea>
           </div>
           
-          <div className="flex justify-end space-x-4">
-            <button
-              type="button"
-              onClick={() => navigate('/dashboard')}
-              className="px-6 py-2 border border-gray-300 rounded-md hover:bg-gray-100"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
-            >
-              Save Profile
-            </button>
+          <div className="flex justify-between">
+            <p className="text-sm text-gray-600">
+              <span className="text-red-500">*</span> Required fields
+            </p>
+            <div className="flex space-x-4">
+              <button
+                type="button"
+                onClick={() => navigate('/dashboard')}
+                className="px-6 py-2 border border-gray-300 rounded-md hover:bg-gray-100"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+              >
+                {isNewUser ? 'Save & Continue' : 'Save Profile'}
+              </button>
+            </div>
           </div>
         </form>
       </div>

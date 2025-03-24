@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 
-const PreferenceForm = ({ onSubmit }) => {
+const PreferenceForm = ({ onSubmit, initialValues }) => {
   const [preferences, setPreferences] = useState({
     cleanliness: '',
     smoking: '',
@@ -10,6 +10,16 @@ const PreferenceForm = ({ onSubmit }) => {
     guestPreference: '',
     music: ''
   });
+
+  // Initialize with existing preferences if provided
+  useEffect(() => {
+    if (initialValues) {
+      setPreferences(prev => ({
+        ...prev,
+        ...initialValues
+      }));
+    }
+  }, [initialValues]);
 
   const preferenceOptions = {
     cleanliness: ['Very Clean', 'Moderately Clean', 'Somewhat Messy', 'Messy'],
@@ -45,7 +55,9 @@ const PreferenceForm = ({ onSubmit }) => {
 
   return (
     <div className="max-w-2xl mx-auto p-6 bg-white rounded-lg shadow-md">
-      <h2 className="text-2xl font-bold mb-6 text-center">Set Your Preferences</h2>
+      <h2 className="text-2xl font-bold mb-6 text-center">
+        {initialValues ? 'Update Your Preferences' : 'Set Your Preferences'}
+      </h2>
       <form onSubmit={handleSubmit} className="space-y-6">
         {Object.keys(preferences).map((category) => (
           <div key={category} className="space-y-2">
@@ -53,7 +65,7 @@ const PreferenceForm = ({ onSubmit }) => {
               {preferenceLabels[category]}
             </label>
             <select
-              value={preferences[category]}
+              value={preferences[category] || ''}
               onChange={(e) => handleChange(category, e.target.value)}
               className="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
               required
@@ -71,7 +83,7 @@ const PreferenceForm = ({ onSubmit }) => {
           type="submit"
           className="w-full bg-blue-500 text-white py-2 px-4 rounded-md hover:bg-blue-600 transition-colors"
         >
-          Save Preferences
+          {initialValues ? 'Update Preferences' : 'Save Preferences'}
         </button>
       </form>
     </div>

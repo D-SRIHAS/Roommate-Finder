@@ -45,31 +45,64 @@ router.post("/register", async (req, res) => {
 
   try {
     console.log("📩 Signup request received");
+    console.log("📋 Request body:", { username, email, passwordLength: password ? password.length : 0 });
+
+    // Validate input
+    if (!username || !email || !password) {
+      console.log("❌ Missing required fields");
+      return res.status(400).json({ message: "Username, email, and password are required" });
+    }
 
     username = username.trim();
     email = email.trim().toLowerCase();
 
-    const existingUser = await User.findOne({ email });
-    if (existingUser) {
-      return res.status(400).json({ message: "❌ Email already registered" });
+    console.log("🔍 Checking if email already exists:", email);
+    const existingEmail = await User.findOne({ email });
+    if (existingEmail) {
+      console.log("❌ Email already registered:", email);
+      return res.status(400).json({ message: "Email already registered" });
     }
 
-    // Hash password
+    console.log("🔍 Checking if username already exists:", username);
+    const existingUsername = await User.findOne({ username });
+    if (existingUsername) {
+      console.log("❌ Username already taken:", username);
+      return res.status(400).json({ message: "Username already taken" });
+    }
+
+    // Hash password manually
+    console.log("🔒 Hashing password");
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
+    console.log("✅ Password hashed successfully");
 
+    // Create new user directly with the hashed password
     const newUser = new User({
       username,
       email,
       password: hashedPassword,
     });
 
-    await newUser.save();
+    // Disable the pre-save hook by passing validate: false option
+    console.log("💾 Saving new user to database");
+    await newUser.save({ validateBeforeSave: false });
     console.log("✅ User registered successfully");
 
     res.status(201).json({ message: "User registered successfully" });
   } catch (err) {
-    console.error("🚨 Signup error:", err);
+    console.error("🚨 Signup error details:", err);
+    
+    // Check for specific error types
+    if (err.name === 'ValidationError') {
+      console.error("❌ Validation error:", err.message);
+      return res.status(400).json({ message: "Validation error", error: err.message });
+    }
+    
+    if (err.code === 11000) {
+      console.error("❌ Duplicate key error:", err.message);
+      return res.status(400).json({ message: "Username or email already exists" });
+    }
+    
     res.status(500).json({ message: "Internal server error", error: err.message });
   }
 });
@@ -97,12 +130,6 @@ router.post("/login", async (req, res) => {
     }
 
     console.log("✅ User found:", user.username);
-    console.log("🔑 Attempting password comparison with bcrypt directly...");
-    
-    // Log info for debugging
-    console.log("📏 Input password length:", password.length);
-    console.log("📏 Stored password length:", user.password.length);
-    console.log("📏 Input password:", password);
     
     // Direct comparison using bcrypt
     try {
@@ -121,7 +148,7 @@ router.post("/login", async (req, res) => {
     // Generate JWT securely
     const token = jwt.sign(
       { userId: user._id, email: user.email },
-      process.env.JWT_SECRET,
+      process.env.JWT_SECRET || 'fallback_secret_key_for_development',
       { expiresIn: "24h" }
     );
 
@@ -138,6 +165,36 @@ router.post("/login", async (req, res) => {
   } catch (err) {
     console.error("🚨 Login error:", err);
     res.status(500).json({ message: "Internal server error", error: err.message });
+  }
+});
+
+// Reset user password (development tool)
+router.post("/reset-password", async (req, res) => {
+  try {
+    const { email, newPassword } = req.body;
+    
+    if (!email || !newPassword) {
+      return res.status(400).json({ message: "Email and new password are required" });
+    }
+    
+    const user = await User.findOne({ email: email.trim().toLowerCase() });
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+    
+    // Hash the new password
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(newPassword, salt);
+    
+    // Update the user's password
+    user.password = hashedPassword;
+    await user.save();
+    
+    console.log("✅ Password reset successful for:", email);
+    res.status(200).json({ message: "Password reset successful" });
+  } catch (error) {
+    console.error("🚨 Password reset error:", error);
+    res.status(500).json({ message: "Internal server error", error: error.message });
   }
 });
 

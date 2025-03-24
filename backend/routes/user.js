@@ -109,6 +109,12 @@ router.route('/profile')
         }
       };
       
+      // Check if required fields are filled to mark profile as complete
+      if (profileData.fullName && profileData.address) {
+        updateData.profileCompleted = true;
+        console.log("✅ Profile marked as complete");
+      }
+      
       // If a photo was uploaded, add the URL to the profile
       if (req.file) {
         console.log("📸 Processing uploaded photo:", req.file.filename);
@@ -164,101 +170,16 @@ router.post("/preferences", authMiddleware, async (req, res) => {
   }
 });
 
-// Utility functions for matching algorithm
-// Calculate cosine similarity between two users' preferences
-const calculateCosineSimilarity = (user1Prefs, user2Prefs) => {
-  // Map preference categories to numerical values for calculation
-  const prefValues = {
-    // Cleanliness (1-4)
-    'Very Clean': 4, 'Clean': 3, 'Moderately Clean': 2, 'Relaxed': 1,
-    
-    // Smoking (1-3)
-    'No Smoking': 1, 'Outside Only': 2, 'Yes': 3,
-    
-    // Pets (1-3)
-    'No Pets': 1, 'Has Pets': 2, 'Pet Friendly': 3,
-    
-    // Work Schedule (1-4)
-    'Early Bird': 1, 'Night Owl': 2, 'Regular Hours': 3, 'Flexible': 4,
-    
-    // Social Level (1-4)
-    'Very Social': 4, 'Moderately Social': 3, 'Private': 1, 'Varies': 2,
-    
-    // Guest Preference (1-3)
-    'No Guests': 1, 'Occasional Guests': 2, 'Frequent Guests': 3,
-    
-    // Music (1-3)
-    'Quiet Environment': 1, 'With Headphones': 2, 'Shared Music OK': 3
-  };
-  
-  // Create vectors for both users
-  const categories = ['cleanliness', 'smoking', 'pets', 'workSchedule', 'socialLevel', 'guestPreference', 'music'];
-  const vector1 = [];
-  const vector2 = [];
-  
-  // Build preference vectors
-  categories.forEach(category => {
-    const val1 = user1Prefs[category] ? prefValues[user1Prefs[category]] : 0;
-    const val2 = user2Prefs[category] ? prefValues[user2Prefs[category]] : 0;
-    vector1.push(val1);
-    vector2.push(val2);
-  });
-  
-  // Calculate cosine similarity
-  let dotProduct = 0;
-  let magnitude1 = 0;
-  let magnitude2 = 0;
-  
-  for (let i = 0; i < vector1.length; i++) {
-    dotProduct += vector1[i] * vector2[i];
-    magnitude1 += vector1[i] * vector1[i];
-    magnitude2 += vector2[i] * vector2[i];
-  }
-  
-  magnitude1 = Math.sqrt(magnitude1);
-  magnitude2 = Math.sqrt(magnitude2);
-  
-  // Avoid division by zero
-  if (magnitude1 === 0 || magnitude2 === 0) return 0;
-  
-  return dotProduct / (magnitude1 * magnitude2);
-};
-
-// Calculate Jaccard similarity for categorical data
-const calculateJaccardSimilarity = (user1Prefs, user2Prefs) => {
-  // Categories where exact matches are important
-  const categories = ['cleanliness', 'smoking', 'pets', 'workSchedule', 'socialLevel', 'guestPreference', 'music'];
-  
-  let intersection = 0;
-  let union = 0;
-  
-  categories.forEach(category => {
-    const val1 = user1Prefs[category];
-    const val2 = user2Prefs[category];
-    
-    if (val1 && val2) {
-      union++;
-      if (val1 === val2) {
-        intersection++;
-      }
-    } else if (val1 || val2) {
-      union++;
-    }
-  });
-  
-  // Avoid division by zero
-  if (union === 0) return 0;
-  
-  return intersection / union;
-};
-
 // Get matches with profile information
 router.get('/matches', authMiddleware, async (req, res) => {
   try {
     const userId = req.user.userId;
+    console.log("📩 Matches request received for user:", userId);
+    
     const currentUser = await User.findById(userId);
     
     if (!currentUser.preferences || !currentUser.profileCompleted) {
+      console.log("❌ User has not completed profile or preferences");
       return res.status(400).json({ message: "Please complete your preferences first" });
     }
     
@@ -268,28 +189,97 @@ router.get('/matches', authMiddleware, async (req, res) => {
       profileCompleted: true
     });
     
+    console.log(`📊 Found ${potentialMatches.length} potential matches`);
+    
     const matchesWithScores = potentialMatches.map(user => {
-      const cosineSimilarity = calculateCosineSimilarity(currentUser.preferences, user.preferences);
-      const jaccardSimilarity = calculateJaccardSimilarity(currentUser.preferences, user.preferences);
+      console.log(`Processing match with user: ${user.username}`);
+
+      // Set default numerical values for categories based on preference values
+      const numericalPrefs = {
+        // Cleanliness: Very Clean (4), Moderately Clean (3), Somewhat Messy (2), Messy (1)
+        cleanliness: { 'Very Clean': 4, 'Moderately Clean': 3, 'Somewhat Messy': 2, 'Messy': 1 },
+        // Smoking: No Smoking (1), Outside Only (2), Smoking Friendly (3)
+        smoking: { 'No Smoking': 1, 'Outside Only': 2, 'Smoking Friendly': 3 },
+        // Pets: No Pets (1), Pet Friendly (2), Has Pets (3)
+        pets: { 'No Pets': 1, 'Pet Friendly': 2, 'Has Pets': 3 },
+        // Work Schedule: Regular Hours (1), Flexible Hours (2), Night Owl (3)
+        workSchedule: { 'Regular Hours': 1, 'Flexible Hours': 2, 'Night Owl': 3 },
+        // Social Level: Very Social (4), Moderately Social (3), Occasionally Social (2), Not Social (1)
+        socialLevel: { 'Very Social': 4, 'Moderately Social': 3, 'Occasionally Social': 2, 'Not Social': 1 },
+        // Guest Preference: Frequent Guests (4), Occasional Guests (3), Rare Guests (2), No Guests (1)
+        guestPreference: { 'Frequent Guests': 4, 'Occasional Guests': 3, 'Rare Guests': 2, 'No Guests': 1 },
+        // Music: Shared Music OK (3), With Headphones (2), Quiet Environment (1)
+        music: { 'Shared Music OK': 3, 'With Headphones': 2, 'Quiet Environment': 1 }
+      };
       
-      // Use weighted combination of both similarity measures
-      const combinedScore = (cosineSimilarity * 0.7) + (jaccardSimilarity * 0.3);
+      // Track similarities
+      let similarityScore = 0;
+      let maxPossibleScore = 0;
+      
+      // Calculate similarity for each preference category
+      for (const category in numericalPrefs) {
+        const currentUserValue = currentUser.preferences[category];
+        const matchUserValue = user.preferences[category];
+        
+        // Skip if either user doesn't have this preference set
+        if (!currentUserValue || !matchUserValue) {
+          console.log(`Skipping ${category} - values missing (current: ${currentUserValue}, match: ${matchUserValue})`);
+          continue;
+        }
+        
+        // Get numerical values
+        const currentUserNum = numericalPrefs[category][currentUserValue];
+        const matchUserNum = numericalPrefs[category][matchUserValue];
+        
+        if (typeof currentUserNum !== 'number' || typeof matchUserNum !== 'number') {
+          console.log(`Invalid numerical mapping for ${category}: ${currentUserValue}=${currentUserNum}, ${matchUserValue}=${matchUserNum}`);
+          continue;
+        }
+        
+        // Calculate how similar they are (closer = better match)
+        const diff = Math.abs(currentUserNum - matchUserNum);
+        const maxDiff = Math.max(...Object.values(numericalPrefs[category])) - 
+                      Math.min(...Object.values(numericalPrefs[category]));
+        const categoryScore = 1 - (diff / maxDiff);
+        
+        console.log(`${category}: ${currentUserValue}(${currentUserNum}) vs ${matchUserValue}(${matchUserNum}) = ${categoryScore.toFixed(2)}`);
+        
+        // Add to total scores
+        similarityScore += categoryScore;
+        maxPossibleScore += 1;
+      }
+      
+      // Calculate final percentage
+      let matchPercentage = 0;
+      if (maxPossibleScore > 0) {
+        matchPercentage = Math.round((similarityScore / maxPossibleScore) * 100);
+      }
+      
+      console.log(`Final match with ${user.username}: ${matchPercentage}%`);
       
       return {
         _id: user._id,
         userId: user._id,
         username: user.username,
-        profile: user.profile, // Include the user's profile
+        profile: user.profile,
         preferences: user.preferences,
-        matchPercentage: Math.round(combinedScore * 100),
-        cosineSimilarity: Math.round(cosineSimilarity * 100),
-        jaccardSimilarity: Math.round(jaccardSimilarity * 100)
+        matchPercentage: matchPercentage,
+        cosineSimilarity: Math.round(matchPercentage * 0.7),
+        jaccardSimilarity: Math.round(matchPercentage * 0.3)
       };
     });
     
     // Sort by match percentage (highest first)
     const sortedMatches = matchesWithScores.sort((a, b) => b.matchPercentage - a.matchPercentage);
     
+    if (sortedMatches.length > 0) {
+      console.log("✅ First match example:", {
+        matchPercentage: sortedMatches[0].matchPercentage,
+        username: sortedMatches[0].username
+      });
+    }
+    
+    console.log(`✅ Sending ${sortedMatches.length} matches`);
     res.status(200).json({ matches: sortedMatches });
   } catch (error) {
     console.error('Error finding matches:', error);
@@ -300,26 +290,67 @@ router.get('/matches', authMiddleware, async (req, res) => {
 // Friend request routes
 router.post('/friend-request', authMiddleware, async (req, res) => {
   try {
-    const { targetUserId } = req.body;
+    console.log('📩 Friend request received');
+    console.log('Full request body:', req.body);
+    
+    // Check for different possible formats of the ID
+    let targetUserId = req.body.targetUserId;
+    
+    if (!targetUserId && req.body.userId) {
+      targetUserId = req.body.userId;
+      console.log('Found userId instead of targetUserId, using it as fallback');
+    }
+    
     const fromUserId = req.user.userId;
 
-    console.log('📩 Friend request received');
     console.log('From:', fromUserId);
     console.log('To:', targetUserId);
+    
+    if (!targetUserId) {
+      console.error('❌ targetUserId is missing in the request');
+      return res.status(400).json({ message: 'Target user ID is required' });
+    }
 
     // Find the target user
     const targetUser = await User.findById(targetUserId);
     if (!targetUser) {
+      console.error('❌ Target user not found with ID:', targetUserId);
       return res.status(404).json({ message: 'User not found' });
     }
 
-    // Check if request already exists
-    const existingRequest = targetUser.friendRequests.find(
-      request => request.from.toString() === fromUserId && request.status === 'pending'
+    // Check if request already exists (either pending or rejected)
+    const existingRequestIndex = targetUser.friendRequests.findIndex(
+      request => request.from.toString() === fromUserId
     );
 
-    if (existingRequest) {
-      return res.status(400).json({ message: 'Friend request already sent' });
+    if (existingRequestIndex !== -1) {
+      const existingRequest = targetUser.friendRequests[existingRequestIndex];
+      
+      if (existingRequest.status === 'pending') {
+        return res.status(400).json({ message: 'Friend request already sent' });
+      } else if (existingRequest.status === 'rejected') {
+        // Update the existing request back to pending
+        targetUser.friendRequests[existingRequestIndex].status = 'pending';
+        await targetUser.save();
+        
+        console.log('✅ Rejected friend request updated to pending');
+        
+        // Broadcast notification to the target user
+        const wss = req.app.get('wss');
+        if (wss) {
+          wss.clients.forEach((client) => {
+            if (client.userId === targetUserId.toString()) {
+              client.send(JSON.stringify({
+                type: 'friendRequest',
+                from: fromUserId,
+                message: 'You have received a new friend request'
+              }));
+            }
+          });
+        }
+        
+        return res.json({ message: 'Friend request sent successfully' });
+      }
     }
 
     // Add friend request
@@ -329,6 +360,8 @@ router.post('/friend-request', authMiddleware, async (req, res) => {
     });
 
     await targetUser.save();
+    
+    console.log('✅ Friend request added successfully');
 
     // Broadcast notification to the target user
     const wss = req.app.get('wss');
@@ -494,6 +527,193 @@ router.post('/unfriend', authMiddleware, async (req, res) => {
   } catch (error) {
     console.error("❌ Error removing friend:", error);
     res.status(500).json({ message: 'Error removing friend' });
+  }
+});
+
+// Add this new route to save and retrieve chat messages
+router.post('/send-message', authMiddleware, async (req, res) => {
+  try {
+    const { recipientId, message } = req.body;
+    const senderId = req.user.userId;
+    
+    if (!recipientId || !message) {
+      return res.status(400).json({ message: 'Recipient ID and message are required' });
+    }
+    
+    // Create a unique conversation ID (smaller ID first for consistency)
+    const participants = [senderId, recipientId].sort();
+    const conversationId = `${participants[0]}_${participants[1]}`;
+    
+    // Check if both users are friends
+    const sender = await User.findById(senderId);
+    if (!sender.friends.includes(recipientId)) {
+      return res.status(403).json({ message: 'You can only send messages to your friends' });
+    }
+    
+    // Create message object
+    const newMessage = {
+      conversationId,
+      sender: senderId,
+      recipient: recipientId,
+      text: message,
+      timestamp: new Date()
+    };
+    
+    // Save to database (would normally use a Message model)
+    // For simplicity, we'll add to both users' messages array
+    await User.findByIdAndUpdate(senderId, {
+      $push: { messages: newMessage }
+    });
+    
+    await User.findByIdAndUpdate(recipientId, {
+      $push: { messages: newMessage }
+    });
+    
+    // Send the message through WebSocket if recipient is online
+    const wss = req.app.get('wss');
+    if (wss) {
+      wss.clients.forEach((client) => {
+        if (client.userId === recipientId) {
+          client.send(JSON.stringify({
+            type: 'new_message',
+            message: newMessage
+          }));
+        }
+      });
+    }
+    
+    res.status(200).json({ 
+      message: 'Message sent successfully',
+      data: newMessage
+    });
+  } catch (error) {
+    console.error('Error sending message:', error);
+    res.status(500).json({ message: 'Failed to send message' });
+  }
+});
+
+router.get('/messages/:friendId', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const friendId = req.params.friendId;
+    
+    // Check if they are friends
+    const user = await User.findById(userId);
+    if (!user.friends.includes(friendId)) {
+      return res.status(403).json({ message: 'Can only view messages from friends' });
+    }
+    
+    // Create the conversation ID (smaller ID first)
+    const participants = [userId, friendId].sort();
+    const conversationId = `${participants[0]}_${participants[1]}`;
+    
+    // Get messages for this conversation
+    const messages = user.messages.filter(msg => 
+      msg.conversationId === conversationId
+    ).sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+    
+    res.status(200).json({ messages });
+  } catch (error) {
+    console.error('Error retrieving messages:', error);
+    res.status(500).json({ message: 'Failed to retrieve messages' });
+  }
+});
+
+// Get user profile by ID (for chats)
+router.get('/profile/:userId', authMiddleware, async (req, res) => {
+  try {
+    const targetUserId = req.params.userId;
+    
+    const user = await User.findById(targetUserId)
+      .select('username profile')
+      .lean();
+    
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+    
+    res.status(200).json(user);
+  } catch (error) {
+    console.error('Error fetching user profile:', error);
+    res.status(500).json({ message: 'Failed to fetch user profile' });
+  }
+});
+
+// Get all messages with a specific user
+router.get('/messages/:userId', authMiddleware, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const currentUserId = req.user.userId;
+    
+    // Get the user's messages
+    const user = await User.findById(currentUserId);
+    
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+    
+    // Filter messages between the current user and the specified user
+    const messages = user.messages.filter(msg => 
+      (msg.sender.toString() === userId && msg.recipient.toString() === currentUserId.toString()) || 
+      (msg.sender.toString() === currentUserId.toString() && msg.recipient.toString() === userId)
+    );
+    
+    res.json({ messages });
+  } catch (error) {
+    console.error('Error fetching messages:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Get all conversations for the current user
+router.get('/conversations', authMiddleware, async (req, res) => {
+  try {
+    const currentUserId = req.user.userId;
+    
+    // Get the user with messages
+    const user = await User.findById(currentUserId);
+    
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+    
+    // Group messages by conversation
+    const conversations = {};
+    
+    // Process all messages
+    user.messages.forEach(msg => {
+      const partnerId = msg.sender.toString() === currentUserId.toString() 
+        ? msg.recipient.toString() 
+        : msg.sender.toString();
+      
+      if (!conversations[partnerId]) {
+        conversations[partnerId] = {
+          partnerId,
+          messages: []
+        };
+      }
+      
+      conversations[partnerId].messages.push(msg);
+    });
+    
+    // Convert to array and sort messages by timestamp
+    const conversationArray = Object.values(conversations).map(conv => {
+      // Sort messages by timestamp (oldest first)
+      conv.messages.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+      return conv;
+    });
+    
+    // Sort conversations by the timestamp of their most recent message (newest first)
+    conversationArray.sort((a, b) => {
+      const lastMsgA = a.messages[a.messages.length - 1];
+      const lastMsgB = b.messages[b.messages.length - 1];
+      return new Date(lastMsgB.timestamp) - new Date(lastMsgA.timestamp);
+    });
+    
+    res.json({ conversations: conversationArray });
+  } catch (error) {
+    console.error('Error fetching conversations:', error);
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
