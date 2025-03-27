@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import axios from 'axios';
+import { io } from 'socket.io-client';
 import './Dashboard.css';
 import PreferenceForm from '../components/PreferenceForm';
 
@@ -18,11 +19,590 @@ const Dashboard = () => {
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [profileIncomplete, setProfileIncomplete] = useState(false);
   const [editingPreferences, setEditingPreferences] = useState(false);
-  const [sentRequests, setSentRequests] = useState({}); // Track sent requests
+  const [sentRequests, setSentRequests] = useState({});
   const [currentMessage, setCurrentMessage] = useState('');
   const [conversations, setConversations] = useState([]);
   const [activeConversation, setActiveConversation] = useState(null);
-  const [ws, setWs] = useState(null);
+  const [socket, setSocket] = useState(null);
+  const [onlineUsers, setOnlineUsers] = useState([]);
+  const [typingUsers, setTypingUsers] = useState({});
+  const [unreadMessages, setUnreadMessages] = useState({});
+  const token = localStorage.getItem('token');
+  const socketRef = useRef(null);
+  const typingTimeoutRef = useRef(null);
+  const chatWindowRef = useRef(null);
+  const messagesEndRef = useRef(null);
+
+  // Scroll to bottom of chat
+  const scrollToBottom = useCallback(() => {
+    if (chatWindowRef.current) {
+      chatWindowRef.current.scrollTop = chatWindowRef.current.scrollHeight;
+    }
+  }, []);
+
+  // Effect to scroll to bottom when messages change
+  useEffect(() => {
+    if (activeConversation?.messages?.length) {
+      scrollToBottom();
+    }
+  }, [activeConversation?.messages, scrollToBottom]);
+
+  // Redirect if no token
+  useEffect(() => {
+    if (!token) {
+      navigate('/login');
+    }
+  }, [token, navigate]);
+
+  // Socket.io connection
+  useEffect(() => {
+    if (!token || !userProfile?._id) return;
+
+    // Connect to Socket.io server
+    const newSocket = io('http://localhost:5002', {
+      auth: { token },
+      query: { token },
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      timeout: 20000
+    });
+    
+    socketRef.current = newSocket;
+    setSocket(newSocket);
+
+    // Socket event listeners
+    newSocket.on('connect', () => {
+      console.log('Connected to Socket.io server');
+    });
+
+    newSocket.on('connect_error', (error) => {
+      console.error('Socket connection error:', error.message);
+      // Attempt to reconnect after a delay
+      setTimeout(() => {
+        if (!newSocket.connected) {
+          newSocket.connect();
+        }
+      }, 5000);
+    });
+
+    newSocket.on('disconnect', (reason) => {
+      console.log('Disconnected from Socket.io server:', reason);
+      if (reason === 'io server disconnect') {
+        // Server initiated disconnect, try to reconnect
+        newSocket.connect();
+      }
+    });
+
+    // Handle new message
+    newSocket.on('newMessage', (message) => {
+      console.log('New message received:', message);
+      
+      // Convert ISO timestamp string to Date object
+      if (typeof message.timestamp === 'string') {
+        message.timestamp = new Date(message.timestamp);
+      }
+      
+      const isSentByMe = message.sender === userProfile._id;
+      const partnerId = isSentByMe ? message.recipient : message.sender;
+      
+      setConversations(prevConversations => {
+        // Find existing conversation
+        const existingConversationIndex = prevConversations.findIndex(
+          conversation => conversation.friendId === partnerId
+        );
+        
+        if (existingConversationIndex > -1) {
+          // Update existing conversation
+          const updatedConversations = [...prevConversations];
+          const existingConversation = { ...updatedConversations[existingConversationIndex] };
+          
+          // Format the message for the UI
+          const formattedMessage = {
+            _id: message._id,
+            text: message.text,
+            sender: isSentByMe ? 'me' : partnerId,
+            timestamp: message.timestamp,
+            read: message.read || false
+          };
+          
+          // Add message to conversation
+          existingConversation.messages = [
+            ...existingConversation.messages,
+            formattedMessage
+          ];
+          
+          // Update last message info
+          existingConversation.lastMessage = message.text;
+          existingConversation.lastMessageTime = message.timestamp;
+          
+          // Update in array
+          updatedConversations[existingConversationIndex] = existingConversation;
+          
+          // If not active conversation and not sent by me, increment unread count
+          if (!activeConversation || activeConversation.friendId !== partnerId) {
+            if (!isSentByMe) {
+              setUnreadMessages(prev => ({
+                ...prev,
+                [partnerId]: (prev[partnerId] || 0) + 1
+              }));
+            }
+          } else {
+            // If this is the active conversation, mark as read
+            if (!isSentByMe && socket) {
+              socket.emit('markAsRead', { messageId: message._id });
+            }
+            
+            // Scroll to bottom
+            setTimeout(() => {
+              if (messagesEndRef.current) {
+                messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+              }
+            }, 100);
+          }
+          
+          // Move conversation to top
+          const [updated] = updatedConversations.splice(existingConversationIndex, 1);
+          return [updated, ...updatedConversations];
+        } else {
+          // Create new conversation
+          const newConversation = {
+            friendId: partnerId,
+            name: 'Loading...',
+            avatar: '',
+            messages: [{
+              _id: message._id,
+              text: message.text,
+              sender: isSentByMe ? 'me' : partnerId,
+              timestamp: message.timestamp,
+              read: message.read || false
+            }],
+            lastMessage: message.text,
+            lastMessageTime: message.timestamp
+          };
+          
+          // Fetch user info
+          axios.get(`${process.env.REACT_APP_BACKEND_URL || 'http://localhost:5002'}/api/user/profile/${partnerId}`, {
+            headers: { Authorization: `Bearer ${token}` }
+          })
+            .then(response => {
+              const userData = response.data;
+              setConversations(prev => 
+                prev.map(convo => 
+                  convo.friendId === partnerId 
+                    ? {
+                        ...convo,
+                        name: userData.username || 'Unknown',
+                        avatar: userData.profileImage || ''
+                      }
+                    : convo
+                )
+              );
+            })
+            .catch(error => {
+              console.error('Error fetching user data:', error);
+            });
+          
+          // If not sent by me, increment unread count
+          if (!isSentByMe) {
+            setUnreadMessages(prev => ({
+              ...prev,
+              [partnerId]: (prev[partnerId] || 0) + 1
+            }));
+          }
+          
+          return [newConversation, ...prevConversations];
+        }
+      });
+    });
+
+    // Handle message sent confirmation
+    newSocket.on('messageSent', (message) => {
+      console.log('Message sent confirmation received:', message);
+      
+      // Convert the ISO timestamp string back to a Date object if needed
+      if (typeof message.timestamp === 'string') {
+        message.timestamp = new Date(message.timestamp);
+      }
+      
+      setConversations(prev => {
+        return prev.map(convo => {
+          if (convo.friendId === message.recipient) {
+            // Find and update the temporary message
+            const updatedMessages = convo.messages.map(msg => {
+              // Add null/undefined check for msg._id
+              if (msg._id && (
+                  msg._id === `temp-${message.timestamp instanceof Date ? message.timestamp.getTime() : Date.now()}` || 
+                  (msg._id.startsWith && msg._id.startsWith('temp-') && msg.text === message.text))
+              ) {
+                return { ...msg, _id: message._id || msg._id, sending: false };
+              }
+              return msg;
+            });
+            
+            return { ...convo, messages: updatedMessages };
+          }
+          return convo;
+        });
+      });
+    });
+
+    // Handle online users
+    newSocket.on('onlineUsers', ({ users }) => {
+      console.log('Online users:', users);
+      setOnlineUsers(users);
+    });
+
+    // Handle user status updates
+    newSocket.on('userStatus', ({ userId, status }) => {
+      console.log(`User ${userId} is now ${status}`);
+      if (status === 'online') {
+        setOnlineUsers(prev => Array.from(new Set([...prev, userId])));
+      } else {
+        setOnlineUsers(prev => prev.filter(id => id !== userId));
+      }
+    });
+
+    // Handle typing indicators
+    newSocket.on('userTyping', ({ userId }) => {
+      setTypingUsers(prev => ({ ...prev, [userId]: true }));
+    });
+
+    newSocket.on('userStopTyping', ({ userId }) => {
+      setTypingUsers(prev => ({ ...prev, [userId]: false }));
+    });
+
+    // Handle read receipts
+    newSocket.on('messageRead', ({ messageId }) => {
+      console.log('Message read:', messageId);
+      // Update UI for read receipt
+      setConversations(prev => {
+        return prev.map(conv => {
+          const updatedMessages = conv.messages.map(msg => {
+            if (msg.id === messageId) {
+              return { ...msg, read: true };
+            }
+            return msg;
+          });
+          return { ...conv, messages: updatedMessages };
+        });
+      });
+    });
+
+    // Handle errors
+    newSocket.on('error', ({ message }) => {
+      console.error('Socket error:', message);
+    });
+
+    // Cleanup
+    return () => {
+      if (socketRef.current) {
+        socketRef.current.disconnect();
+      }
+    };
+  }, [token, userProfile, activeConversation]);
+
+  // Function to update conversations with new message
+  const updateConversationWithMessage = useCallback((message) => {
+    if (!message || !message.sender || !message.text) {
+      console.error('Invalid message data:', message);
+      return;
+    }
+
+    // Ensure timestamp is a Date object
+    if (typeof message.timestamp === 'string') {
+      message.timestamp = new Date(message.timestamp);
+    }
+
+    // Check if message is from current user
+    const isSentByMe = message.sender === userProfile?._id;
+    const partnerId = isSentByMe ? message.recipient : message.sender;
+
+    // Check if active conversation
+    const isActiveConversation = activeConversation?.friendId === partnerId;
+
+    // Mark message as read if it's in active conversation and has a real ID
+    if (isActiveConversation && !isSentByMe && socket && message._id && !message._id.startsWith('temp-')) {
+      socket.emit('markAsRead', { messageId: message._id });
+      
+      // Clear unread count for this conversation
+      setUnreadMessages(prev => ({ ...prev, [partnerId]: 0 }));
+    }
+
+    // Update conversations state
+    setConversations(prevConversations => {
+      // Find existing conversation with this user
+      const existingConversationIndex = prevConversations.findIndex(
+        conversation => conversation.friendId === partnerId
+      );
+
+      if (existingConversationIndex > -1) {
+        // Update existing conversation
+        const updatedConversations = [...prevConversations];
+        const existingConversation = { ...updatedConversations[existingConversationIndex] };
+        
+        // Add new message to conversation
+        existingConversation.messages = [
+          ...existingConversation.messages, 
+          {
+            _id: message._id,
+            text: message.text,
+            sender: isSentByMe ? 'me' : partnerId,
+            timestamp: message.timestamp,
+            read: message.read || false
+          }
+        ];
+        
+        // Update last message and time
+        existingConversation.lastMessage = message.text;
+        existingConversation.lastMessageTime = message.timestamp;
+        
+        // Update conversation in array
+        updatedConversations[existingConversationIndex] = existingConversation;
+        
+        // Scroll to bottom if active conversation
+        if (isActiveConversation) {
+          setTimeout(() => {
+            if (chatWindowRef.current) {
+              chatWindowRef.current.scrollTop = chatWindowRef.current.scrollHeight;
+            }
+          }, 100);
+        }
+        
+        // Increment unread count if not active conversation and not sent by me
+        if (!isActiveConversation && !isSentByMe) {
+          setUnreadMessages(prev => ({
+            ...prev,
+            [partnerId]: (prev[partnerId] || 0) + 1
+          }));
+        }
+        
+        return updatedConversations;
+      } else {
+        // Create new conversation with placeholder data
+        // We'll fetch user info in the background
+        const newConversation = {
+          friendId: partnerId,
+          name: 'Loading...',
+          avatar: '',
+          messages: [{
+            _id: message._id,
+            text: message.text,
+            sender: isSentByMe ? 'me' : partnerId,
+            timestamp: message.timestamp,
+            read: message.read || false
+          }],
+          lastMessage: message.text,
+          lastMessageTime: message.timestamp
+        };
+        
+        // Fetch user info in the background
+        axios.get(`${process.env.REACT_APP_BACKEND_URL || 'http://localhost:5002'}/api/user/profile/${partnerId}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        })
+          .then(response => {
+            const userData = response.data;
+            
+            setConversations(prev => prev.map(convo => 
+              convo.friendId === partnerId 
+                ? { 
+                    ...convo, 
+                    name: userData.username || 'Unknown',
+                    avatar: userData.profileImage || ''
+                  }
+                : convo
+            ));
+          })
+          .catch(error => {
+            console.error('Error fetching user data:', error);
+          });
+        
+        // Increment unread count if not active and not sent by me
+        if (!isActiveConversation && !isSentByMe) {
+          setUnreadMessages(prev => ({
+            ...prev,
+            [partnerId]: (prev[partnerId] || 0) + 1
+          }));
+        }
+        
+        return [...prevConversations, newConversation];
+      }
+    });
+  }, [userProfile, activeConversation, socket]);
+
+  // Handle sending messages
+  const handleSendMessage = useCallback(() => {
+    if (!activeConversation || !currentMessage.trim() || !socket) {
+      console.error('Cannot send message:', { 
+        hasActiveConversation: !!activeConversation, 
+        messageContent: currentMessage, 
+        hasSocket: !!socket 
+      });
+      return;
+    }
+    
+    const messageText = currentMessage.trim();
+    
+    // Create message object
+    const messageData = {
+      recipientId: activeConversation.friendId,
+      text: messageText
+    };
+    
+    // Create optimistic message for UI
+    const optimisticMessage = {
+      id: `temp-${Date.now()}`,
+      sender: 'me',
+      text: messageText,
+      timestamp: new Date().toISOString(),
+      pending: true
+    };
+    
+    // Update UI immediately
+    setActiveConversation(prev => ({
+      ...prev,
+      messages: [...prev.messages, optimisticMessage]
+    }));
+    
+    // Update conversations list
+    setConversations(prevConversations => {
+      const convIndex = prevConversations.findIndex(c => 
+        c.friendId === activeConversation.friendId
+      );
+      
+      if (convIndex === -1) return prevConversations;
+      
+      const updatedConversations = [...prevConversations];
+      const updatedConv = {
+        ...updatedConversations[convIndex],
+        messages: [...updatedConversations[convIndex].messages, optimisticMessage]
+      };
+      
+      updatedConversations[convIndex] = updatedConv;
+      
+      // Move to top
+      const [movedConv] = updatedConversations.splice(convIndex, 1);
+      return [movedConv, ...updatedConversations];
+    });
+    
+    // Clear input
+    setCurrentMessage('');
+    
+    // Scroll to bottom
+    setTimeout(scrollToBottom, 50);
+    
+    // Stop typing indicator
+    socket.emit('stopTyping', { recipientId: activeConversation.friendId });
+    
+    // Actually send via socket.io
+    socket.emit('sendMessage', messageData);
+  }, [activeConversation, currentMessage, socket, scrollToBottom]);
+
+  // Handle input change with typing indicator
+  const handleInputChange = useCallback((e) => {
+    setCurrentMessage(e.target.value);
+    
+    if (socket && activeConversation) {
+      // Send typing indicator
+      socket.emit('typing', { recipientId: activeConversation.friendId });
+      
+      // Clear existing timeout
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+      
+      // Set timeout to stop typing indicator
+      typingTimeoutRef.current = setTimeout(() => {
+        socket.emit('stopTyping', { recipientId: activeConversation.friendId });
+      }, 2000);
+    }
+  }, [socket, activeConversation]);
+
+  // Start chat with a friend
+  const handleChat = useCallback((friend) => {
+    // Check if conversation already exists
+    const existingConversation = conversations.find(conv => conv.friendId === friend._id);
+    
+    if (existingConversation) {
+      setActiveConversation(existingConversation);
+      
+      // Mark messages as read
+      if (socket) {
+        existingConversation.messages.forEach(msg => {
+          if (msg.sender !== 'me' && !msg.read && msg._id && !msg._id.startsWith('temp-')) {
+            socket.emit('markAsRead', { messageId: msg._id });
+          }
+        });
+      }
+      
+      // Clear unread count
+      setUnreadMessages(prev => ({ ...prev, [friend._id]: 0 }));
+    } else {
+      // Fetch conversation history
+      axios.get(`http://localhost:5002/api/user/messages/${friend._id}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+      .then(response => {
+        // Transform messages
+        const messages = response.data?.messages?.map(msg => ({
+          id: msg._id || Date.now().toString(),
+          sender: msg.sender === userProfile?._id ? 'me' : msg.sender,
+          text: msg.text,
+          timestamp: msg.timestamp,
+          read: msg.read || false
+        })) || [];
+        
+        // Create new conversation
+        const newConversation = {
+          id: Date.now().toString(),
+          friendId: friend._id,
+          friendName: friend.profile?.fullName || friend.username,
+          friendPhoto: friend.profile?.photoUrl || null,
+          messages: messages
+        };
+        
+        setConversations(prev => [newConversation, ...prev]);
+        setActiveConversation(newConversation);
+        
+        // Mark messages as read
+        if (socket) {
+          messages.forEach(msg => {
+            if (msg.sender !== 'me' && !msg.read && msg._id && !msg._id.startsWith('temp-')) {
+              socket.emit('markAsRead', { messageId: msg._id });
+            }
+          });
+        }
+        
+        // Clear unread count
+        setUnreadMessages(prev => ({ ...prev, [friend._id]: 0 }));
+      })
+      .catch(error => {
+        console.error('Error fetching messages:', error);
+        
+        // Create empty conversation
+        const newConversation = {
+          id: Date.now().toString(),
+          friendId: friend._id,
+          friendName: friend.profile?.fullName || friend.username,
+          friendPhoto: friend.profile?.photoUrl || null,
+          messages: []
+        };
+        
+        setConversations(prev => [newConversation, ...prev]);
+        setActiveConversation(newConversation);
+      });
+    }
+    
+    // Join room for this conversation
+    if (socket) {
+      const roomId = [userProfile._id, friend._id].sort().join('_');
+      socket.emit('joinRoom', roomId);
+    }
+    
+    // Switch to chats tab
+    setActiveTab('chats');
+  }, [conversations, userProfile?._id, socket, token]);
 
   const fetchData = async () => {
     try {
@@ -164,196 +744,6 @@ const Dashboard = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Intentionally leaving dependency array empty to avoid infinite loop
 
-  useEffect(() => {
-    // Setup WebSocket connection
-    const token = localStorage.getItem('token');
-    if (token) {
-      console.log('Setting up WebSocket connection');
-      
-      // Close any existing connections before creating a new one
-      if (ws) {
-        console.log('Closing existing WebSocket connection');
-        ws.close();
-      }
-      
-      const connectWebSocket = () => {
-        const socket = new WebSocket(`ws://localhost:5002?token=${token}`);
-        
-        socket.onopen = () => {
-          console.log('WebSocket connected with token for user:', userProfile?._id);
-        };
-        
-        socket.onmessage = (event) => {
-          try {
-            const data = JSON.parse(event.data);
-            console.log('WebSocket message received:', data);
-            
-            // Handle different message types
-            if (data.type === 'new_message') {
-              console.log('New message received:', data.message);
-              handleNewMessage(data.message);
-            } else if (data.type === 'message_sent') {
-              console.log('Message sent confirmation:', data.message);
-              updateConversationWithMessage(data.message);
-            } else if (data.type === 'error') {
-              console.error('WebSocket error message:', data.message);
-              alert(`Error: ${data.message}`);
-            } else if (data.type === 'auth_error' && data.action === 'clear_token') {
-              // Handle expired token
-              localStorage.removeItem('token');
-              navigate('/login');
-            }
-          } catch (error) {
-            console.error('Error processing WebSocket message:', error);
-          }
-        };
-        
-        socket.onerror = (error) => {
-          console.error('WebSocket error:', error);
-        };
-        
-        socket.onclose = (event) => {
-          console.log('WebSocket disconnected:', event.code, event.reason);
-          // Try to reconnect after 3 seconds
-          setTimeout(() => {
-            console.log('Attempting to reconnect WebSocket...');
-            // Only reconnect if the token is still valid
-            if (localStorage.getItem('token') === token) {
-              connectWebSocket();
-            }
-          }, 3000);
-        };
-        
-        setWs(socket);
-        return socket;
-      };
-      
-      const socket = connectWebSocket();
-      
-      // Clean up on unmount
-      return () => {
-        console.log('Closing WebSocket connection');
-        if (socket && socket.readyState === WebSocket.OPEN) {
-          socket.close();
-        }
-      };
-    }
-  }, [navigate, userProfile, ws]);
-  
-  const handleNewMessage = useCallback((message) => {
-    // Add new message to the appropriate conversation
-    console.log('handleNewMessage called with:', message);
-    setConversations(prevConversations => {
-      // Find if the conversation exists
-      const existingConvIndex = prevConversations.findIndex(
-        conv => conv.friendId === message.sender
-      );
-      
-      if (existingConvIndex >= 0) {
-        // Update existing conversation
-        const updatedConversations = [...prevConversations];
-        const newMsg = {
-          id: message._id || Date.now().toString(),
-          sender: message.sender,
-          text: message.text,
-          timestamp: message.timestamp
-        };
-        console.log('Adding message to existing conversation:', newMsg);
-        
-        updatedConversations[existingConvIndex] = {
-          ...updatedConversations[existingConvIndex],
-          messages: [...updatedConversations[existingConvIndex].messages, newMsg]
-        };
-        
-        // If this is the active conversation, update it
-        if (activeConversation && activeConversation.friendId === message.sender) {
-          setActiveConversation(updatedConversations[existingConvIndex]);
-        }
-        
-        return updatedConversations;
-      } else {
-        // Need to fetch user info for this sender
-        console.log('Conversation not found, creating new one');
-        fetchUserInfo(message.sender).then(senderInfo => {
-          // Create a new conversation
-          const newConversation = {
-            id: message.conversationId,
-            friendId: message.sender,
-            friendName: senderInfo?.profile?.fullName || senderInfo?.username || 'User',
-            friendPhoto: senderInfo?.profile?.photoUrl,
-            messages: [{
-              id: message._id || Date.now().toString(),
-              sender: message.sender,
-              text: message.text,
-              timestamp: message.timestamp
-            }]
-          };
-          
-          console.log('Creating new conversation:', newConversation);
-          setConversations(prev => [...prev, newConversation]);
-          
-          // Optionally auto-switch to this conversation
-          if (!activeConversation) {
-            setActiveConversation(newConversation);
-            setActiveTab('chats');
-          }
-        });
-        
-        return prevConversations;
-      }
-    });
-  }, [activeConversation, setActiveTab]);
-  
-  const updateConversationWithMessage = useCallback((message) => {
-    // Add sent message to the active conversation
-    console.log('updateConversationWithMessage called with:', message);
-    setConversations(prevConversations => {
-      // Find if the conversation exists
-      const existingConvIndex = prevConversations.findIndex(
-        conv => conv.friendId === message.recipient
-      );
-      
-      if (existingConvIndex >= 0) {
-        // Update existing conversation
-        const updatedConversations = [...prevConversations];
-        const newMsg = {
-          id: message._id || Date.now().toString(),
-          sender: 'me',
-          text: message.text,
-          timestamp: message.timestamp
-        };
-        
-        console.log('Adding sent message to conversation:', newMsg);
-        updatedConversations[existingConvIndex] = {
-          ...updatedConversations[existingConvIndex],
-          messages: [...updatedConversations[existingConvIndex].messages, newMsg]
-        };
-        
-        // If this is the active conversation, update it
-        if (activeConversation && activeConversation.friendId === message.recipient) {
-          setActiveConversation(updatedConversations[existingConvIndex]);
-        }
-        
-        return updatedConversations;
-      }
-      
-      return prevConversations;
-    });
-  }, [activeConversation]);
-  
-  const fetchUserInfo = async (userId) => {
-    try {
-      const token = localStorage.getItem('token');
-      const response = await axios.get(`http://localhost:5002/api/user/profile/${userId}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      return response.data;
-    } catch (error) {
-      console.error('Error fetching user info:', error);
-      return { username: 'User' };
-    }
-  };
-
   const handleSendFriendRequest = async (userId) => {
     try {
       console.log('Button clicked with userId:', userId);
@@ -417,10 +807,10 @@ const Dashboard = () => {
 
   const handleLogout = () => {
     // Close WebSocket connection if open
-    if (ws) {
-      console.log('Closing WebSocket connection before logout');
-      ws.close();
-      setWs(null);
+    if (socket) {
+      console.log('Closing Socket.io connection before logout');
+      socket.disconnect();
+      setSocket(null);
     }
     
     // Clear all saved data
@@ -455,113 +845,231 @@ const Dashboard = () => {
     }
   };
 
-  const handleChat = (friend) => {
-    // Check if a conversation already exists with this friend
-    const existingConversation = conversations.find(conv => conv.friendId === friend._id);
-    
-    if (existingConversation) {
-      setActiveConversation(existingConversation);
-    } else {
-      // Fetch conversation history
-      const token = localStorage.getItem('token');
-      axios.get(`http://localhost:5002/api/user/messages/${friend._id}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      }).then(response => {
-        // Transform messages to our format
-        const messages = response.data?.messages?.map(msg => ({
-          id: msg._id || Date.now().toString(),
-          sender: msg.sender === userProfile?._id ? 'me' : msg.sender,
-          text: msg.text,
-          timestamp: msg.timestamp
-        })) || [];
+  // Render the Chats tab
+  const renderChatsTab = () => {
+    return (
+      <div className="flex h-[calc(100vh-150px)]">
+        {/* Conversation list */}
+        <div className="w-1/4 bg-white rounded-lg shadow mr-4 overflow-y-auto">
+          <h3 className="text-lg font-semibold p-4 border-b">Your Conversations</h3>
+          {conversations.length === 0 ? (
+            <div className="p-4 text-gray-500">
+              No conversations yet. Start chatting with your matches!
+            </div>
+          ) : (
+            <ul>
+              {conversations.map(conversation => (
+                <li 
+                  key={conversation.id}
+                  onClick={() => {
+                    setActiveConversation(conversation);
+                    // Mark as read
+                    if (socket && unreadMessages[conversation.friendId]) {
+                      conversation.messages.forEach(msg => {
+                        if (msg.sender !== 'me' && !msg.read && msg._id && !msg._id.startsWith('temp-')) {
+                          socket.emit('markAsRead', { messageId: msg._id });
+                        }
+                      });
+                      
+                      // Clear unread count
+                      setUnreadMessages(prev => ({ ...prev, [conversation.friendId]: 0 }));
+                    }
+                  }}
+                  className={`p-4 border-b cursor-pointer hover:bg-gray-50 ${
+                    activeConversation && activeConversation.id === conversation.id
+                    ? 'bg-blue-50 border-l-4 border-l-blue-500'
+                    : ''
+                  }`}
+                >
+                  <div className="flex items-center">
+                    <div className="relative">
+                      <div className="w-10 h-10 rounded-full bg-gray-300 overflow-hidden mr-3">
+                        {conversation.friendPhoto ? (
+                          <img 
+                            src={conversation.friendPhoto.startsWith('http') 
+                              ? conversation.friendPhoto 
+                              : `http://localhost:5002${conversation.friendPhoto}`} 
+                            alt={conversation.friendName} 
+                            className="w-full h-full object-cover"
+                          />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center">
+                            <span className="text-xl">👤</span>
+                          </div>
+                        )}
+                      </div>
+                      
+                      {/* Online indicator */}
+                      {onlineUsers.includes(conversation.friendId) && (
+                        <div className="absolute bottom-0 right-1 w-3 h-3 bg-green-500 rounded-full border-2 border-white"></div>
+                      )}
+                    </div>
+                    
+                    <div className="flex-1">
+                      <div className="flex justify-between items-center">
+                        <div className="font-semibold">{conversation.friendName}</div>
+                        
+                        {/* Unread message count */}
+                        {unreadMessages[conversation.friendId] > 0 && (
+                          <div className="bg-blue-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs">
+                            {unreadMessages[conversation.friendId]}
+                          </div>
+                        )}
+                      </div>
+                      
+                      {/* Last message preview */}
+                      {conversation.messages.length > 0 && (
+                        <div className="text-gray-500 text-sm truncate">
+                          {conversation.messages[conversation.messages.length - 1].text}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
         
-        // Create a new conversation with only real messages
-        const newConversation = {
-          id: Date.now().toString(),
-          friendId: friend._id,
-          friendName: friend.profile?.fullName || friend.username,
-          friendPhoto: friend.profile?.photoUrl || null,
-          messages: messages
-        };
-        
-        setConversations(prev => [...prev, newConversation]);
-        setActiveConversation(newConversation);
-      }).catch(error => {
-        console.error('Error fetching messages:', error);
-        
-        // Create a new empty conversation
-        const newConversation = {
-          id: Date.now().toString(),
-          friendId: friend._id,
-          friendName: friend.profile?.fullName || friend.username,
-          friendPhoto: friend.profile?.photoUrl || null,
-          messages: []
-        };
-        
-        setConversations(prev => [...prev, newConversation]);
-        setActiveConversation(newConversation);
-      });
-    }
-    
-    // Switch to chats tab
-    setActiveTab('chats');
-  };
-
-  const handleSendMessage = () => {
-    if (!activeConversation || currentMessage.trim() === '') return;
-    
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      console.log('Sending message:', {
-        type: 'chat',
-        recipientId: activeConversation.friendId,
-        text: currentMessage
-      });
-      
-      // Optimistically add message to UI immediately
-      const optimisticMessage = {
-        id: `temp-${Date.now()}`,
-        sender: 'me',
-        text: currentMessage,
-        timestamp: new Date().toISOString(),
-        pending: true
-      };
-      
-      setActiveConversation(prev => ({
-        ...prev,
-        messages: [...prev.messages, optimisticMessage]
-      }));
-      
-      // Clear input immediately for better UX
-      setCurrentMessage('');
-      
-      // Send message via WebSocket
-      ws.send(JSON.stringify({
-        type: 'chat',
-        recipientId: activeConversation.friendId,
-        text: optimisticMessage.text
-      }));
-    } else {
-      console.error('WebSocket not connected, readyState:', ws ? ws.readyState : 'no ws');
-      
-      // Try to reconnect
-      if (ws) {
-        ws.close();
-      }
-      
-      const token = localStorage.getItem('token');
-      if (token) {
-        const newWs = new WebSocket(`ws://localhost:5002?token=${token}`);
-        setWs(newWs);
-        
-        // After connection, retry sending
-        newWs.onopen = () => {
-          console.log('WebSocket reconnected, retrying message send');
-          setTimeout(() => handleSendMessage(), 500);
-        };
-      } else {
-        alert('Connection issue. Please refresh the page.');
-      }
-    }
+        {/* Chat window */}
+        {activeConversation ? (
+          <div className="flex-1 bg-white rounded-lg shadow flex flex-col">
+            {/* Chat header */}
+            <div className="p-4 border-b flex items-center justify-between">
+              <div className="flex items-center">
+                <div className="relative">
+                  <div className="w-10 h-10 rounded-full bg-gray-300 overflow-hidden mr-3">
+                    {activeConversation.friendPhoto ? (
+                      <img 
+                        src={activeConversation.friendPhoto.startsWith('http') 
+                          ? activeConversation.friendPhoto 
+                          : `http://localhost:5002${activeConversation.friendPhoto}`} 
+                        alt={activeConversation.friendName} 
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center">
+                        <span className="text-xl">👤</span>
+                      </div>
+                    )}
+                  </div>
+                  
+                  {/* Online indicator */}
+                  {onlineUsers.includes(activeConversation.friendId) && (
+                    <div className="absolute bottom-0 right-1 w-3 h-3 bg-green-500 rounded-full border-2 border-white"></div>
+                  )}
+                </div>
+                <div>
+                  <div className="font-semibold">{activeConversation.friendName}</div>
+                  <div className="text-xs text-gray-500">
+                    {onlineUsers.includes(activeConversation.friendId) 
+                      ? 'Online' 
+                      : 'Offline'}
+                  </div>
+                </div>
+              </div>
+              
+              {/* View profile button */}
+              <button 
+                onClick={() => {
+                  const friend = friends.find(f => f._id === activeConversation.friendId);
+                  if (friend) {
+                    setSelectedFriend(friend);
+                    setShowProfileModal(true);
+                  }
+                }}
+                className="text-blue-500 hover:text-blue-700"
+              >
+                View Profile
+              </button>
+            </div>
+            
+            {/* Messages */}
+            <div className="flex-1 p-4 overflow-y-auto bg-gray-50" ref={chatWindowRef}>
+              {activeConversation.messages.map((message, index) => (
+                <div 
+                  key={message.id || index} 
+                  className={`mb-4 flex ${message.sender === 'me' ? 'justify-end' : 'justify-start'}`}
+                >
+                  <div 
+                    className={`
+                      max-w-[70%] rounded-lg px-4 py-2 
+                      ${message.sender === 'me' 
+                        ? 'bg-blue-500 text-white' 
+                        : 'bg-gray-200 text-gray-800'}
+                    `}
+                  >
+                    <p className="break-words">{message.text}</p>
+                    <div className="flex justify-between items-center mt-1">
+                      <span className="text-xs text-gray-400">
+                        {new Date(message.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                      </span>
+                      
+                      {/* Read receipt for sent messages */}
+                      {message.sender === 'me' && (
+                        <span className="text-xs ml-2">
+                          {message.sending ? (
+                            <span>Sending...</span>
+                          ) : message.read ? (
+                            <span>✓✓</span>
+                          ) : (
+                            <span>✓</span>
+                          )}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+              
+              {/* Typing indicator */}
+              {typingUsers[activeConversation.friendId] && (
+                <div className="flex items-center text-gray-500 text-sm">
+                  <span className="mr-2">{activeConversation.friendName} is typing</span>
+                  <div className="flex space-x-1">
+                    <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
+                    <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+                    <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }}></div>
+                  </div>
+                </div>
+              )}
+            </div>
+            
+            {/* Input area */}
+            <div className="p-3 border-t bg-white">
+              <form 
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleSendMessage();
+                }}
+                className="flex gap-2"
+              >
+                <input
+                  type="text"
+                  value={currentMessage}
+                  onChange={handleInputChange}
+                  className="flex-1 p-2 border rounded-lg"
+                  placeholder="Type a message..."
+                />
+                <button
+                  type="submit"
+                  className="bg-blue-500 text-white px-4 py-2 rounded-lg"
+                >
+                  Send
+                </button>
+              </form>
+            </div>
+          </div>
+        ) : (
+          <div className="flex-1 bg-white rounded-lg shadow flex items-center justify-center">
+            <div className="text-center text-gray-500">
+              <div className="text-4xl mb-2">💬</div>
+              <div>Select a conversation or start a new chat with a friend</div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
   };
 
   if (loading) {
@@ -1053,302 +1561,7 @@ const Dashboard = () => {
             </div>
           )}
 
-          {activeTab === 'chats' && (
-            <div className="flex h-[calc(100vh-150px)]">
-              {/* Conversation list */}
-              <div className="w-1/4 bg-white rounded-lg shadow mr-4 overflow-y-auto">
-                <h3 className="text-lg font-semibold p-4 border-b">Your Conversations</h3>
-                {conversations.length === 0 ? (
-                  <div className="p-4 text-gray-500">
-                    No conversations yet. Start chatting with your matches!
-                  </div>
-                ) : (
-                  <ul>
-                    {conversations.map(conversation => (
-                      <li 
-                        key={conversation.id}
-                        onClick={() => setActiveConversation(conversation)}
-                        className={`p-4 border-b cursor-pointer hover:bg-gray-50 ${
-                          activeConversation && activeConversation.id === conversation.id
-                          ? 'bg-blue-50 border-l-4 border-l-blue-500'
-                          : ''
-                        }`}
-                      >
-                        <div className="flex items-center">
-                          <div className="w-10 h-10 rounded-full bg-gray-300 overflow-hidden mr-3">
-                            {conversation.friendPhoto ? (
-                              <img 
-                                src={conversation.friendPhoto.startsWith('http') 
-                                  ? conversation.friendPhoto 
-                                  : `http://localhost:5002${conversation.friendPhoto}`} 
-                                alt={conversation.friendName} 
-                                className="w-full h-full object-cover"
-                              />
-                            ) : (
-                              <div className="w-full h-full flex items-center justify-center">
-                                <span className="text-xl">👤</span>
-                              </div>
-                            )}
-                          </div>
-                          <div>
-                            <div className="font-semibold">{conversation.friendName}</div>
-                            <div className="text-sm text-gray-500 truncate">
-                              {conversation.messages.length > 0 
-                                ? `${conversation.messages[conversation.messages.length - 1].sender === 'me' 
-                                  ? 'You: ' 
-                                  : ''}${conversation.messages[conversation.messages.length - 1].text.slice(0, 20)}${conversation.messages[conversation.messages.length - 1].text.length > 20 ? '...' : ''}`
-                                : 'Start a conversation'}
-                            </div>
-                          </div>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-              
-              {/* Chat window with profile sidebar - Instagram style */}
-              <div className="flex-1 flex bg-white rounded-lg shadow overflow-hidden">
-                {activeConversation ? (
-                  <>
-                    {/* Main chat area */}
-                    <div className="flex-1 flex flex-col">
-                      {/* Chat header */}
-                      <div className="p-4 border-b flex items-center">
-                        <div className="w-10 h-10 rounded-full bg-gray-300 overflow-hidden mr-3">
-                          {activeConversation.friendPhoto ? (
-                            <img 
-                              src={activeConversation.friendPhoto.startsWith('http') 
-                                ? activeConversation.friendPhoto 
-                                : `http://localhost:5002${activeConversation.friendPhoto}`} 
-                              alt={activeConversation.friendName} 
-                              className="w-full h-full object-cover"
-                            />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center">
-                              <span className="text-xl">👤</span>
-                            </div>
-                          )}
-                        </div>
-                        <div className="font-semibold">{activeConversation.friendName}</div>
-                      </div>
-                      
-                      {/* Chat messages */}
-                      <div className="flex-1 p-4 overflow-y-auto bg-gray-50">
-                        {activeConversation.messages.map(message => (
-                          <div 
-                            key={message.id} 
-                            className={`mb-4 max-w-[70%] ${
-                              message.sender === 'me' 
-                                ? 'ml-auto' 
-                                : 'mr-auto'
-                            }`}
-                          >
-                            <div className={`p-3 rounded-lg shadow-sm ${
-                              message.sender === 'me' 
-                                ? 'bg-blue-500 text-white rounded-br-none' 
-                                : 'bg-white text-gray-800 rounded-bl-none border border-gray-200'
-                            }`}>
-                              {message.text}
-                            </div>
-                            <div className={`text-xs text-gray-500 mt-1 ${
-                              message.sender === 'me' ? 'text-right' : 'text-left'
-                            }`}>
-                              {message.sender === 'me' ? 'You' : activeConversation.friendName} • {new Date(message.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                      
-                      {/* Chat input */}
-                      <div className="p-4 border-t">
-                        <form 
-                          onSubmit={e => {
-                            e.preventDefault();
-                            handleSendMessage();
-                          }}
-                          className="flex items-center"
-                        >
-                          <input
-                            type="text"
-                            value={currentMessage}
-                            onChange={e => setCurrentMessage(e.target.value)}
-                            placeholder="Type a message..."
-                            className="flex-1 border rounded-l-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                          />
-                          <button
-                            type="submit"
-                            className="bg-blue-500 text-white px-4 py-2 rounded-r-lg hover:bg-blue-600"
-                          >
-                            Send
-                          </button>
-                        </form>
-                      </div>
-                    </div>
-                    
-                    {/* Profile sidebar - Instagram style */}
-                    <div className="w-1/3 border-l bg-white overflow-y-auto hidden md:block">
-                      <div className="p-6 text-center border-b">
-                        <div className="w-24 h-24 rounded-full bg-gray-300 overflow-hidden mx-auto mb-4">
-                          {activeConversation.friendPhoto ? (
-                            <img 
-                              src={activeConversation.friendPhoto.startsWith('http') 
-                                ? activeConversation.friendPhoto 
-                                : `http://localhost:5002${activeConversation.friendPhoto}`} 
-                              alt={activeConversation.friendName} 
-                              className="w-full h-full object-cover"
-                            />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center">
-                              <span className="text-4xl">👤</span>
-                            </div>
-                          )}
-                        </div>
-                        <h3 className="text-xl font-bold mb-1">{activeConversation.friendName}</h3>
-                        
-                        {/* Friend's details - will be fetched from the friend object */}
-                        {friends.find(f => f._id === activeConversation.friendId)?.profile && (
-                          <div className="text-sm text-gray-600 mb-3">
-                            {friends.find(f => f._id === activeConversation.friendId)?.profile?.occupation || 'No occupation'}
-                          </div>
-                        )}
-                        
-                        <div className="flex justify-center mt-4 space-x-2">
-                          <button 
-                            onClick={() => {
-                              const friend = friends.find(f => f._id === activeConversation.friendId);
-                              if (friend) handleViewProfile(friend);
-                            }}
-                            className="bg-blue-100 text-blue-700 px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-200"
-                          >
-                            View Full Profile
-                          </button>
-                        </div>
-                      </div>
-                      
-                      {/* Friend's information */}
-                      {friends.find(f => f._id === activeConversation.friendId)?.profile && (
-                        <div className="px-6 py-4">
-                          <h4 className="text-sm uppercase text-gray-500 font-medium mb-4">About</h4>
-                          
-                          <div className="space-y-4">
-                            {friends.find(f => f._id === activeConversation.friendId)?.profile?.bio && (
-                              <div>
-                                <p className="text-sm text-gray-800">
-                                  {friends.find(f => f._id === activeConversation.friendId)?.profile?.bio}
-                                </p>
-                              </div>
-                            )}
-                            
-                            {friends.find(f => f._id === activeConversation.friendId)?.profile?.address && (
-                              <div className="flex items-start">
-                                <div className="text-gray-500 mr-2">📍</div>
-                                <div>
-                                  <p className="text-sm text-gray-800 font-medium">Location</p>
-                                  <p className="text-sm text-gray-600">
-                                    {friends.find(f => f._id === activeConversation.friendId)?.profile?.address}
-                                  </p>
-                                </div>
-                              </div>
-                            )}
-                            
-                            {friends.find(f => f._id === activeConversation.friendId)?.profile?.phone && (
-                              <div className="flex items-start">
-                                <div className="text-gray-500 mr-2">📱</div>
-                                <div>
-                                  <p className="text-sm text-gray-800 font-medium">Phone</p>
-                                  <p className="text-sm text-gray-600">
-                                    {friends.find(f => f._id === activeConversation.friendId)?.profile?.phone}
-                                  </p>
-                                </div>
-                              </div>
-                            )}
-                            
-                            {/* Show match percentage if available */}
-                            {matches.find(m => m._id === activeConversation.friendId)?.matchPercentage && (
-                              <div className="flex items-start">
-                                <div className="text-gray-500 mr-2">🤝</div>
-                                <div>
-                                  <p className="text-sm text-gray-800 font-medium">Match Rate</p>
-                                  <p className="text-sm text-green-600 font-bold">
-                                    {matches.find(m => m._id === activeConversation.friendId)?.matchPercentage}% Match
-                                  </p>
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                          
-                          {/* Preferences section */}
-                          {friends.find(f => f._id === activeConversation.friendId)?.preferences && (
-                            <div className="mt-6">
-                              <h4 className="text-sm uppercase text-gray-500 font-medium mb-4">Roommate Preferences</h4>
-                              
-                              <div className="space-y-3">
-                                {Object.entries(friends.find(f => f._id === activeConversation.friendId)?.preferences || {}).map(([key, value]) => 
-                                  value && (
-                                    <div key={key} className="flex">
-                                      <div className="w-1/2 text-sm text-gray-600">{key.charAt(0).toUpperCase() + key.slice(1)}</div>
-                                      <div className="w-1/2 text-sm text-gray-800 font-medium">{value}</div>
-                                    </div>
-                                  )
-                                )}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </>
-                ) : (
-                  <div className="flex items-center justify-center h-full w-full">
-                    <div className="text-center p-8">
-                      <div className="text-5xl mb-4">💬</div>
-                      <h3 className="text-xl font-semibold mb-2">Conversations</h3>
-                      <p className="text-gray-600 mb-4">
-                        {conversations.length > 0 ? 
-                          "Select a conversation from the list to start chatting." :
-                          "No conversations yet. Start chatting with your matches and friends!"}
-                      </p>
-                      <div className="mt-6">
-                        <button
-                          onClick={() => setActiveTab('matches')}
-                          className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
-                        >
-                          Find Matches to Chat With
-                        </button>
-                      </div>
-                      
-                      {friends.length > 0 && (
-                        <div className="mt-6">
-                          <h4 className="text-lg font-medium mb-2">Friends</h4>
-                          <div className="flex flex-wrap gap-2 justify-center">
-                            {friends.slice(0, 5).map(friend => (
-                              <button
-                                key={friend._id}
-                                onClick={() => handleChat(friend)}
-                                className="inline-flex items-center px-3 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 bg-white hover:bg-gray-50"
-                              >
-                                {friend.profile?.photoUrl && (
-                                  <img 
-                                    src={friend.profile.photoUrl.startsWith('http') 
-                                      ? friend.profile.photoUrl 
-                                      : `http://localhost:5002${friend.profile.photoUrl}`}
-                                    alt={friend.profile?.fullName || friend.username}
-                                    className="w-6 h-6 rounded-full mr-2"
-                                  />
-                                )}
-                                Chat with {friend.profile?.fullName || friend.username}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
+          {activeTab === 'chats' && renderChatsTab()}
         </div>
       </div>
 
