@@ -8,11 +8,15 @@
     "@testing-library/react": "^16.2.0",
     "@testing-library/user-event": "^13.5.0",
     "axios": "^1.8.3",
+    "css-select": "^5.1.0",
+    "nth-check": "^2.1.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.3.0",
-    "react-scripts": "5.0.1",
+    "react-scripts": "^3.0.1",
+    "resolve-url-loader": "^5.0.0",
     "socket.io-client": "^4.8.1",
+    "svgo": "^3.3.2",
     "web-vitals": "^2.1.4"
   },
   "scripts": {
@@ -41,7 +45,9 @@
   },
   "devDependencies": {
     "autoprefixer": "^10.4.21",
+    "node-notifier": "^10.0.1",
     "postcss": "^8.5.3",
-    "tailwindcss": "^3.4.17"
+    "tailwindcss": "^3.4.17",
+    "tough-cookie": "^5.1.2"
   }
 }
