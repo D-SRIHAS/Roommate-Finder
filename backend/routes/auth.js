@@ -1,351 +1,234 @@
-const express = require("express");
-const bcrypt = require("bcryptjs");
-const jwt = require("jsonwebtoken");
-const User = require("../models/User");
-const authMiddleware = require("../middleware/authMiddleware");
-const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
-
+const express = require('express');
 const router = express.Router();
+const authController = require('../controllers/authController');
+const User = require('../models/User');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 
-// Configure multer for test uploads
-const testStorage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadDir = path.join(__dirname, '../uploads');
-    // Create the directory if it doesn't exist
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
-    }
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const ext = path.extname(file.originalname);
-    cb(null, 'test-' + uniqueSuffix + ext);
-  }
-});
+// Send OTP to user's email
+router.post('/send-otp', authController.sendOTP);
 
-const testUpload = multer({ 
-  storage: testStorage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
-  fileFilter: (req, file, cb) => {
-    // Accept only image files
-    if (file.mimetype.startsWith('image/')) {
-      cb(null, true);
-    } else {
-      cb(new Error('Only image files are allowed!'), false);
-    }
-  }
-});
+// Verify OTP
+router.post('/verify-otp', authController.verifyOTP);
 
-// ✅ Register User
-router.post("/register", async (req, res) => {
-  let { username, email, password } = req.body;
+// Link verification routes
+router.post('/send-verification-email', authController.sendVerificationEmail);
+router.post('/verify-email-token', authController.verifyEmailToken);
 
+// Login user
+router.post('/login', async (req, res) => {
   try {
-    console.log("📩 Signup request received");
-    console.log("📋 Request body:", { username, email, passwordLength: password ? password.length : 0 });
+    const { email, password } = req.body;
+    
+    // Validate input
+    if (!email || !password) {
+      return res.status(400).json({ message: 'Please provide email and password' });
+    }
+    
+    console.log(`Attempting login for email: ${email}`);
+    
+    // Find user
+    const user = await User.findOne({ email });
+    if (!user) {
+      console.log(`Login failed: No user found with email ${email}`);
+      return res.status(400).json({ message: 'Invalid credentials' });
+    }
+    
+    // Check password
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      console.log(`Login failed: Password mismatch for ${email}`);
+      return res.status(400).json({ message: 'Invalid credentials' });
+    }
+    
+    console.log(`Login successful for user: ${email}`);
+    
+    // Generate JWT
+    const token = jwt.sign(
+      { userId: user._id },
+      process.env.JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+    
+    // Check if email is verified and include appropriate flags
+    const requireVerification = !user.emailVerified;
+    
+    res.json({
+      message: user.emailVerified 
+        ? 'Login successful' 
+        : 'Login successful. Please verify your email to access all features.',
+      token,
+      user: {
+        id: user._id,
+        username: user.username,
+        email: user.email,
+        emailVerified: user.emailVerified
+      },
+      requireVerification,
+      redirectTo: requireVerification ? '/verify-email' : null
+    });
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
 
+// Register user
+router.post('/register', async (req, res) => {
+  try {
+    const { username, email, password } = req.body;
+    
     // Validate input
     if (!username || !email || !password) {
-      console.log("❌ Missing required fields");
-      return res.status(400).json({ message: "Username, email, and password are required" });
-    }
-
-    username = username.trim();
-    email = email.trim().toLowerCase();
-
-    console.log("🔍 Checking if email already exists:", email);
-    const existingEmail = await User.findOne({ email });
-    if (existingEmail) {
-      console.log("❌ Email already registered:", email);
-      return res.status(400).json({ message: "Email already registered" });
-    }
-
-    console.log("🔍 Checking if username already exists:", username);
-    const existingUsername = await User.findOne({ username });
-    if (existingUsername) {
-      console.log("❌ Username already taken:", username);
-      return res.status(400).json({ message: "Username already taken" });
-    }
-
-    // Hash password manually
-    console.log("🔒 Hashing password");
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
-    console.log("✅ Password hashed successfully");
-
-    // Create new user directly with the hashed password
-    const newUser = new User({
-      username,
-      email,
-      password: hashedPassword,
-    });
-
-    // Disable the pre-save hook by passing validate: false option
-    console.log("💾 Saving new user to database");
-    await newUser.save({ validateBeforeSave: false });
-    console.log("✅ User registered successfully");
-
-    res.status(201).json({ message: "User registered successfully" });
-  } catch (err) {
-    console.error("🚨 Signup error details:", err);
-    
-    // Check for specific error types
-    if (err.name === 'ValidationError') {
-      console.error("❌ Validation error:", err.message);
-      return res.status(400).json({ message: "Validation error", error: err.message });
+      return res.status(400).json({ message: 'Please provide username, email, and password' });
     }
     
-    if (err.code === 11000) {
-      console.error("❌ Duplicate key error:", err.message);
-      return res.status(400).json({ message: "Username or email already exists" });
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ 
+        message: 'Please provide a valid email address',
+        emailInvalid: true
+      });
     }
     
-    res.status(500).json({ message: "Internal server error", error: err.message });
-  }
-});
-
-// ✅ Login User - Completely rewritten with direct bcrypt comparison
-router.post("/login", async (req, res) => {
-  let { email, password } = req.body;
-
-  try {
-    console.log("📩 Login request received");
-
-    if (!email || !password) {
-      console.log("❌ Missing email or password");
-      return res.status(400).json({ message: "Email and password are required" });
-    }
-
-    email = email.trim().toLowerCase();
-    console.log("🔍 Looking for user with email:", email);
-
-    // Find user without using methods
-    const user = await User.findOne({ email });
-    if (!user) {
-      console.log("❌ User not found with email:", email);
-      return res.status(400).json({ message: "Invalid email or password" });
-    }
-
-    console.log("✅ User found:", user.username);
-    
-    // Direct comparison using bcrypt
-    try {
-      const isMatch = await bcrypt.compare(password, user.password);
-      console.log("🔍 Password match result:", isMatch);
-  
-      if (!isMatch) {
-        console.log("❌ Password does not match for:", email);
-        return res.status(400).json({ message: "Invalid email or password" });
-      }
-    } catch (compareError) {
-      console.error("🚨 Error comparing passwords:", compareError);
-      return res.status(500).json({ message: "Error verifying credentials" });
-    }
-
-    // Generate JWT securely
-    const token = jwt.sign(
-      { userId: user._id, email: user.email },
-      process.env.JWT_SECRET || 'fallback_secret_key_for_development',
-      { expiresIn: "24h" }
-    );
-
-    console.log("✅ Login successful for:", email);
-    res.status(200).json({ 
-      message: "Login successful", 
-      token,
-      user: {
-        _id: user._id,
-        username: user.username,
-        email: user.email
-      }
-    });
-  } catch (err) {
-    console.error("🚨 Login error:", err);
-    res.status(500).json({ message: "Internal server error", error: err.message });
-  }
-});
-
-// Reset user password (development tool)
-router.post("/reset-password", async (req, res) => {
-  try {
-    const { email, newPassword } = req.body;
-    
-    if (!email || !newPassword) {
-      return res.status(400).json({ message: "Email and new password are required" });
-    }
-    
-    const user = await User.findOne({ email: email.trim().toLowerCase() });
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
-    
-    // Hash the new password
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(newPassword, salt);
-    
-    // Update the user's password
-    user.password = hashedPassword;
-    await user.save();
-    
-    console.log("✅ Password reset successful for:", email);
-    res.status(200).json({ message: "Password reset successful" });
-  } catch (error) {
-    console.error("🚨 Password reset error:", error);
-    res.status(500).json({ message: "Internal server error", error: error.message });
-  }
-});
-
-// ✅ Protected Route
-router.get("/protected", authMiddleware, (req, res) => {
-  res.json({ message: "🔒 You have accessed a protected route!", user: req.user });
-});
-
-// ✅ Test User Registration for Debugging
-router.post("/create-test-user", async (req, res) => {
-  try {
-    console.log("📩 Creating test user");
-    
-    // Create a new user with fixed credentials
-    const email = "testuser@example.com";
-    const username = "TestUser";
-    const password = "Test123!";
+    console.log(`Attempting registration for email: ${email}, username: ${username}`);
     
     // Check if user already exists
-    const existingUser = await User.findOne({ email });
+    let existingUser = await User.findOne({ email });
     if (existingUser) {
-      // Delete existing user to recreate
-      await User.deleteOne({ email });
-      console.log("🗑️ Deleted existing test user");
+      console.log(`Registration failed: Email ${email} already exists`);
+      return res.status(400).json({ 
+        message: `This email (${email}) is already registered. Please use a different email or try logging in.`,
+        emailExists: true
+      });
     }
-
-    // Hash password
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
-    console.log("🔒 Hashed password:", hashedPassword);
-
-    const newUser = new User({
+    
+    existingUser = await User.findOne({ username });
+    if (existingUser) {
+      console.log(`Registration failed: Username ${username} already exists`);
+      return res.status(400).json({ 
+        message: `Username "${username}" is already taken. Please choose a different username.`,
+        usernameExists: true
+      });
+    }
+    
+    // Create new user
+    const user = new User({
       username,
       email,
-      password: hashedPassword,
+      password,
+      emailVerified: false // Explicitly set as false
     });
-
-    await newUser.save();
-    console.log("✅ Test user created successfully:", {
-      email,
-      password: "Test123!",
-      hashedPassword
-    });
-
-    // Generate token for immediate login
+    
+    await user.save();
+    console.log(`Registration successful for user: ${email}`);
+    
+    // Generate JWT
     const token = jwt.sign(
-      { userId: newUser._id, email: newUser.email },
+      { userId: user._id },
       process.env.JWT_SECRET,
-      { expiresIn: "1h" }
+      { expiresIn: '7d' }
     );
-
-    res.status(201).json({ 
-      message: "Test user created successfully", 
-      credentials: {
-        email,
-        password
-      },
-      token
-    });
-  } catch (err) {
-    console.error("🚨 Test user creation error:", err);
-    res.status(500).json({ message: "Internal server error", error: err.message });
-  }
-});
-
-// ✅ Direct Login for Testing (No Password Verification)
-router.post("/direct-login", async (req, res) => {
-  let { email } = req.body;
-
-  try {
-    console.log("📩 Direct login request received for:", email);
-
-    email = email.trim().toLowerCase();
-
-    const user = await User.findOne({ email });
-    if (!user) {
-      console.log("❌ User not found with email:", email);
-      return res.status(400).json({ message: "User not found" });
-    }
-
-    // Generate JWT securely
-    const token = jwt.sign(
-      { userId: user._id, email: user.email },
-      process.env.JWT_SECRET,
-      { expiresIn: "1h" }
-    );
-
-    console.log("✅ Direct login successful for:", email);
-    res.status(200).json({ 
-      message: "Login successful", 
+    
+    // Don't send verification emails automatically
+    // Just redirect to verification page
+    
+    res.status(201).json({
+      message: 'User registered successfully. Please verify your email to access all features.',
       token,
       user: {
-        _id: user._id,
+        id: user._id,
         username: user.username,
-        email: user.email
-      } 
+        email: user.email,
+        emailVerified: false
+      },
+      requireVerification: true,
+      redirectTo: '/verify-email'
     });
-  } catch (err) {
-    console.error("🚨 Direct login error:", err);
-    res.status(500).json({ message: "Internal server error", error: err.message });
+  } catch (error) {
+    console.error('Registration error:', error);
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
-// Add a test route to check file uploads
-router.get('/test-upload', (req, res) => {
-  res.send(`
-    <html>
-      <head>
-        <title>Test File Upload</title>
-      </head>
-      <body>
-        <h1>Test File Upload</h1>
-        <form action="/api/auth/test-upload" method="post" enctype="multipart/form-data">
-          <input type="file" name="testPhoto" />
-          <button type="submit">Upload</button>
-        </form>
-      </body>
-    </html>
-  `);
-});
-
-// Handle test upload
-router.post('/test-upload', testUpload.single('testPhoto'), (req, res) => {
+// Direct verification endpoint (for testing)
+router.post('/verify-email-direct', async (req, res) => {
   try {
-    console.log('Test file upload received:', req.file);
+    const { username } = req.body;
     
-    if (!req.file) {
-      return res.status(400).send('No file uploaded');
+    if (!username) {
+      return res.status(400).json({ message: 'Username is required' });
     }
     
-    const fileUrl = `/uploads/${req.file.filename}`;
-    console.log('File URL:', fileUrl);
+    // Find user by username
+    const user = await User.findOne({ username });
     
-    res.send(`
-      <html>
-        <head>
-          <title>Upload Success</title>
-        </head>
-        <body>
-          <h1>Upload Success!</h1>
-          <p>File uploaded to: ${fileUrl}</p>
-          <img src="${fileUrl}" style="max-width: 500px" />
-          <br>
-          <a href="/api/auth/test-upload">Upload another file</a>
-        </body>
-      </html>
-    `);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+    
+    // Mark email as verified
+    user.emailVerified = true;
+    await user.save();
+    
+    res.json({
+      message: `Email for user ${username} marked as verified`,
+      success: true,
+      user: {
+        id: user._id,
+        username: user.username,
+        emailVerified: user.emailVerified
+      }
+    });
   } catch (error) {
-    console.error('Test upload error:', error);
-    res.status(500).send('Upload failed');
+    console.error('Direct verification error:', error);
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
-module.exports = router;
+// Resend verification email/OTP route
+router.post('/resend-verification', async (req, res) => {
+  try {
+    const { email, method } = req.body;
+    
+    if (!email) {
+      return res.status(400).json({ message: 'Email is required' });
+    }
+    
+    // Find user by email
+    const user = await User.findOne({ email });
+    
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+    
+    // Check if already verified
+    if (user.emailVerified) {
+      return res.status(400).json({ message: 'Email is already verified' });
+    }
+    
+    // Send verification based on method preference
+    if (method === 'link' || !method) {
+      // Send verification link
+      await authController.sendVerificationEmail({ 
+        body: { email, userId: user._id } 
+      }, { status: () => ({ json: () => {} }) });
+    } else {
+      // Send OTP
+      await authController.sendOTP({ 
+        body: { email } 
+      }, { status: () => ({ json: () => {} }) });
+    }
+    
+    res.json({
+      message: `Verification ${method === 'otp' ? 'OTP' : 'link'} sent successfully`,
+      success: true
+    });
+  } catch (error) {
+    console.error('Resend verification error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+module.exports = router; 

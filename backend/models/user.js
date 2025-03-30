@@ -16,6 +16,10 @@ const userSchema = new mongoose.Schema({
     trim: true,
     lowercase: true
   },
+  emailVerified: {
+    type: Boolean,
+    default: false
+  },
   password: {
     type: String,
     required: true,
@@ -106,6 +110,32 @@ const userSchema = new mongoose.Schema({
     createdAt: {
       type: Date,
       default: Date.now
+    },
+    fromUserData: {
+      username: {
+        type: String
+      },
+      fullName: {
+        type: String
+      },
+      photoUrl: {
+        type: String
+      },
+      bio: {
+        type: String
+      },
+      address: {
+        type: String
+      },
+      phone: {
+        type: String
+      },
+      occupation: {
+        type: String
+      },
+      emailVerified: {
+        type: Boolean
+      }
     }
   }],
   messages: [{

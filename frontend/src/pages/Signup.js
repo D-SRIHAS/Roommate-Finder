@@ -10,22 +10,35 @@ const Signup = () => {
   const [password, setPassword] = useState("");
   const [message, setMessage] = useState("");
   const [isSuccess, setIsSuccess] = useState(false);
+  const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-
+    setLoading(true);
+    setMessage("");
+    
     // Trim inputs
     const userData = { 
       username: username.trim(), 
       email: email.trim().toLowerCase(), 
       password 
     };
-
+    
+    // Client-side email validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(userData.email)) {
+      setMessage("Please enter a valid email address format");
+      setIsSuccess(false);
+      setLoading(false);
+      return;
+    }
+    
     // Validate password strength
     if (password.length < 6) {
       setMessage("Password must be at least 6 characters long");
       setIsSuccess(false);
+      setLoading(false);
       return;
     }
 
@@ -35,18 +48,41 @@ const Signup = () => {
       console.log("Signup Response:", response.data);
 
       if (response.status === 201) {
-        setMessage("✅ Signup successful! Redirecting to login...");
+        // Store token in localStorage
+        localStorage.setItem('token', response.data.token);
+        
+        // Store verification status
+        localStorage.setItem('emailVerified', "false");
+        
+        setMessage("✅ Signup successful! Please verify your email address.");
         setIsSuccess(true);
-        // Redirect to login page after 2 seconds
-        setTimeout(() => navigate("/login"), 2000);
+        
+        // Redirect to verification page with email info
+        setTimeout(() => {
+          navigate("/verify-email", { 
+            state: { email: userData.email }
+          });
+        }, 2000);
       } else {
         setMessage(response.data.message || "❌ Signup failed. Try again.");
         setIsSuccess(false);
       }
     } catch (error) {
       console.error("Signup Error:", error);
-      setMessage(error.response?.data?.message || "❌ An error occurred. Please try again.");
+      
+      if (error.response?.data?.emailInvalid) {
+        setMessage("Please enter a valid email address");
+      } else if (error.response?.data?.emailExists) {
+        setMessage(error.response.data.message || "This email is already registered");
+      } else if (error.response?.data?.usernameExists) {
+        setMessage(error.response.data.message || "This username is already taken");
+      } else {
+        setMessage(error.response?.data?.message || "❌ An error occurred. Please try again.");
+      }
+      
       setIsSuccess(false);
+    } finally {
+      setLoading(false);
     }
   };
 

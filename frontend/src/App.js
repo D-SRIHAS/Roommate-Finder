@@ -4,6 +4,7 @@ import Login from "./pages/Login";
 import Signup from "./pages/Signup";
 import Dashboard from "./pages/Dashboard";
 import Profile from "./pages/Profile";
+import EmailVerification from "./pages/EmailVerification";
 
 function App() {
   const navigate = useNavigate();
@@ -78,6 +79,8 @@ function App() {
         <Route path="/login" element={<Login />} />
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/profile" element={<Profile />} />
+        <Route path="/verify-email" element={<EmailVerification />} />
+        <Route path="/verify-email-token" element={<EmailVerification />} />
       </Routes>
     </>
   );

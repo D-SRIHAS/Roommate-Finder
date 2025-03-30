@@ -31,6 +31,18 @@ const Login = () => {
       // Store token in localStorage
       localStorage.setItem('token', response.data.token);
       
+      // Store verification status
+      localStorage.setItem('emailVerified', response.data.user.emailVerified);
+      
+      // Check if verification is required
+      if (response.data.requireVerification) {
+        // Redirect to verification page with email
+        navigate('/verify-email', {
+          state: { email: email }
+        });
+        return;
+      }
+      
       // Navigate to dashboard
       navigate('/dashboard');
     } catch (err) {
@@ -99,6 +111,17 @@ const Login = () => {
           Don't have an account?{" "}
           <Link to="/signup" className="text-blue-500 hover:underline font-semibold">
             Sign up
+          </Link>
+        </p>
+        
+        <p className="text-center text-gray-600 mt-3">
+          Need to verify your email?{" "}
+          <Link 
+            to="/verify-email" 
+            state={{ email: email }} 
+            className="text-green-500 hover:underline font-semibold"
+          >
+            Verify email
           </Link>
         </p>
       </div>

@@ -1,6 +1,7 @@
 const express = require("express");
 const User = require("../models/User");
 const authMiddleware = require("../middleware/authMiddleware");
+const verificationMiddleware = require("../middleware/verificationMiddleware");
 const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
@@ -61,6 +62,19 @@ router.route('/profile')
 
       if (user.friendRequests && user.friendRequests.length > 0) {
         user.friendRequests = user.friendRequests.map(request => {
+          // Return fromUserData if available, otherwise fallback to populated from field
+          // This ensures compatibility with both old and new request formats
+          const fromUserData = request.fromUserData || {
+            username: request.from.username,
+            fullName: request.from.profile?.fullName || '',
+            photoUrl: request.from.profile?.photoUrl || null,
+            bio: request.from.profile?.bio || '',
+            address: request.from.profile?.address || '',
+            phone: request.from.profile?.phone || '',
+            occupation: request.from.profile?.occupation || '',
+            emailVerified: request.from.emailVerified || false
+          };
+          
           return {
             _id: request._id,
             from: request.from._id,
@@ -69,8 +83,14 @@ router.route('/profile')
             fromUser: {
               username: request.from.username,
               fullName: request.from.profile?.fullName || '',
-              photoUrl: request.from.profile?.photoUrl || null
-            }
+              photoUrl: request.from.profile?.photoUrl || null,
+              bio: request.from.profile?.bio || '',
+              address: request.from.profile?.address || '',
+              phone: request.from.profile?.phone || '',
+              occupation: request.from.profile?.occupation || '',
+              emailVerified: request.from.emailVerified || false
+            },
+            fromUserData: fromUserData
           };
         });
       }
@@ -287,15 +307,12 @@ router.get('/matches', authMiddleware, async (req, res) => {
   }
 });
 
-// Friend request routes
-router.post('/friend-request', authMiddleware, async (req, res) => {
+// Send friend request
+router.post("/friend-request", authMiddleware, verificationMiddleware, async (req, res) => {
   try {
-    console.log('📩 Friend request received');
-    console.log('Full request body:', req.body);
-    
-    // Check for different possible formats of the ID
     let targetUserId = req.body.targetUserId;
     
+    // Fallback to userId if targetUserId is not provided
     if (!targetUserId && req.body.userId) {
       targetUserId = req.body.userId;
       console.log('Found userId instead of targetUserId, using it as fallback');
@@ -311,6 +328,12 @@ router.post('/friend-request', authMiddleware, async (req, res) => {
       return res.status(400).json({ message: 'Target user ID is required' });
     }
 
+    // Find the sender user to get their profile info
+    const fromUser = await User.findById(fromUserId);
+    if (!fromUser) {
+      return res.status(404).json({ message: 'Sender user not found' });
+    }
+
     // Find the target user
     const targetUser = await User.findById(targetUserId);
     if (!targetUser) {
@@ -323,29 +346,48 @@ router.post('/friend-request', authMiddleware, async (req, res) => {
       request => request.from.toString() === fromUserId
     );
 
+    // Prepare sender's profile data
+    const senderData = {
+      _id: fromUser._id,
+      username: fromUser.username,
+      fullName: fromUser.profile?.fullName || '',
+      photoUrl: fromUser.profile?.photoUrl || null,
+      bio: fromUser.profile?.bio || '',
+      address: fromUser.profile?.address || '',
+      phone: fromUser.profile?.phone || '',
+      occupation: fromUser.profile?.occupation || '',
+      emailVerified: fromUser.emailVerified || false
+    };
+
     if (existingRequestIndex !== -1) {
       const existingRequest = targetUser.friendRequests[existingRequestIndex];
       
       if (existingRequest.status === 'pending') {
         return res.status(400).json({ message: 'Friend request already sent' });
       } else if (existingRequest.status === 'rejected') {
-        // Update the existing request back to pending
+        // Update the existing request back to pending and update sender data
         targetUser.friendRequests[existingRequestIndex].status = 'pending';
+        targetUser.friendRequests[existingRequestIndex].fromUserData = senderData;
         await targetUser.save();
         
         console.log('✅ Rejected friend request updated to pending');
         
         // Broadcast notification to the target user
-        const wss = req.app.get('wss');
-        if (wss) {
-          wss.clients.forEach((client) => {
-            if (client.userId === targetUserId.toString()) {
-              client.send(JSON.stringify({
-                type: 'friendRequest',
-                from: fromUserId,
-                message: 'You have received a new friend request'
-              }));
-            }
+        const io = req.app.get('io');
+        if (io) {
+          const targetUserSocketIds = [];
+          const activeUsers = req.app.get('activeUsers') || new Map();
+          
+          if (activeUsers.has(targetUserId)) {
+            targetUserSocketIds.push(...activeUsers.get(targetUserId));
+          }
+          
+          targetUserSocketIds.forEach(socketId => {
+            io.to(socketId).emit('friendRequest', {
+              from: fromUserId,
+              fromUserData: senderData,
+              message: 'You have received a new friend request'
+            });
           });
         }
         
@@ -353,27 +395,33 @@ router.post('/friend-request', authMiddleware, async (req, res) => {
       }
     }
 
-    // Add friend request
+    // Add friend request with sender's profile data
     targetUser.friendRequests.push({
       from: fromUserId,
-      status: 'pending'
+      status: 'pending',
+      fromUserData: senderData
     });
 
     await targetUser.save();
     
     console.log('✅ Friend request added successfully');
 
-    // Broadcast notification to the target user
-    const wss = req.app.get('wss');
-    if (wss) {
-      wss.clients.forEach((client) => {
-        if (client.userId === targetUserId.toString()) {
-          client.send(JSON.stringify({
-            type: 'friendRequest',
-            from: fromUserId,
-            message: 'You have received a new friend request'
-          }));
-        }
+    // Broadcast notification to the target user using Socket.io
+    const io = req.app.get('io');
+    if (io) {
+      const targetUserSocketIds = [];
+      const activeUsers = req.app.get('activeUsers') || new Map();
+      
+      if (activeUsers.has(targetUserId)) {
+        targetUserSocketIds.push(...activeUsers.get(targetUserId));
+      }
+      
+      targetUserSocketIds.forEach(socketId => {
+        io.to(socketId).emit('friendRequest', {
+          from: fromUserId,
+          fromUserData: senderData,
+          message: 'You have received a new friend request'
+        });
       });
     }
 

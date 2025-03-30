@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation, Link } from 'react-router-dom';
 import axios from 'axios';
 import { io } from 'socket.io-client';
 import './Dashboard.css';
@@ -744,6 +744,23 @@ const Dashboard = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Intentionally leaving dependency array empty to avoid infinite loop
 
+  // Add this function to handle API errors
+  const handleApiError = (error, functionName) => {
+    console.error(`Error in ${functionName}:`, error);
+    
+    // Check if error is related to verification requirement
+    if (error.response && error.response.data && error.response.data.requireVerification) {
+      alert(error.response.data.message || 'Email verification required for this action');
+      
+      // Redirect to verification page
+      navigate('/verify-email');
+      return true;
+    }
+    
+    return false;
+  };
+
+  // Update the handleSendFriendRequest function
   const handleSendFriendRequest = async (userId) => {
     try {
       console.log('Button clicked with userId:', userId);
@@ -771,6 +788,10 @@ const Dashboard = () => {
       
       alert('Friend request sent successfully!');
     } catch (error) {
+      if (handleApiError(error, 'handleSendFriendRequest')) {
+        return;
+      }
+      
       console.error('Error sending friend request:', error);
       
       // If the error is that we already sent a request, mark it as sent
@@ -791,6 +812,7 @@ const Dashboard = () => {
     }
   };
 
+  // Update the handleFriendRequestResponse function
   const handleFriendRequestResponse = async (requestId, action) => {
     try {
       const token = localStorage.getItem('token');
@@ -800,6 +822,10 @@ const Dashboard = () => {
       );
       fetchData(); // Refresh all data
     } catch (error) {
+      if (handleApiError(error, 'handleFriendRequestResponse')) {
+        return;
+      }
+      
       console.error('Error responding to friend request:', error);
       alert('Failed to process friend request');
     }
@@ -830,6 +856,7 @@ const Dashboard = () => {
     setShowProfileModal(true);
   };
 
+  // Update the handleUnfriend function
   const handleUnfriend = async (friendId) => {
     try {
       const token = localStorage.getItem('token');
@@ -840,6 +867,10 @@ const Dashboard = () => {
       fetchData(); // Refresh the data
       alert('Friend removed successfully');
     } catch (error) {
+      if (handleApiError(error, 'handleUnfriend')) {
+        return;
+      }
+      
       console.error('Error removing friend:', error);
       alert('Failed to remove friend');
     }
@@ -847,7 +878,7 @@ const Dashboard = () => {
 
   // Render the Chats tab
   const renderChatsTab = () => {
-    return (
+  return (
       <div className="flex h-[calc(100vh-150px)]">
         {/* Conversation list */}
         <div className="w-1/4 bg-white rounded-lg shadow mr-4 overflow-y-auto">
@@ -959,7 +990,7 @@ const Dashboard = () => {
                     <div className="absolute bottom-0 right-1 w-3 h-3 bg-green-500 rounded-full border-2 border-white"></div>
                   )}
                 </div>
-                <div>
+    <div>
                   <div className="font-semibold">{activeConversation.friendName}</div>
                   <div className="text-xs text-gray-500">
                     {onlineUsers.includes(activeConversation.friendId) 
@@ -1201,6 +1232,39 @@ const Dashboard = () => {
               >
                 {profileIncomplete ? 'Complete Your Profile' : 'Edit Profile'}
               </button>
+
+              {/* Verify Email button */}
+              <div className="mt-4">
+                <Link
+                  to="/verify-email"
+                  className="inline-block bg-green-500 text-white px-4 py-2 rounded-lg transition hover:bg-green-600"
+                >
+                  Verify Email
+                </Link>
+                <p className="text-xs text-gray-500 mt-1">
+                  Verify your email to increase account security
+                </p>
+              </div>
+
+              {/* Email Verification Status */}
+              <div className="mt-2 flex items-center">
+                <span className="text-sm text-gray-600 mr-2">Email Status:</span>
+                {userProfile?.emailVerified ? (
+                  <span className="bg-green-100 text-green-800 text-xs font-medium px-2.5 py-0.5 rounded-full flex items-center">
+                    <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd"></path>
+                    </svg>
+                    Verified
+                  </span>
+                ) : (
+                  <span className="bg-yellow-100 text-yellow-800 text-xs font-medium px-2.5 py-0.5 rounded-full flex items-center">
+                    <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                      <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd"></path>
+                    </svg>
+                    Not Verified
+                  </span>
+                )}
+              </div>
             </div>
           )}
 
@@ -1446,21 +1510,26 @@ const Dashboard = () => {
                                // Create a temporary friend object from the request data
                                const tempFriend = {
                                  _id: request.from,
-                                 username: request.fromUser?.username || 'User',
+                                 username: request.fromUserData?.username || request.fromUser?.username || 'User',
+                                 emailVerified: request.fromUserData?.emailVerified,
                                  profile: {
-                                   fullName: request.fromUser?.fullName || request.fromUser?.username || 'User',
-                                   photoUrl: request.fromUser?.photoUrl || null
+                                   fullName: request.fromUserData?.fullName || request.fromUser?.fullName || 'User',
+                                   photoUrl: request.fromUserData?.photoUrl || request.fromUser?.photoUrl || null,
+                                   bio: request.fromUserData?.bio || request.fromUser?.bio || '',
+                                   address: request.fromUserData?.address || request.fromUser?.address || '',
+                                   phone: request.fromUserData?.phone || request.fromUser?.phone || '',
+                                   occupation: request.fromUserData?.occupation || request.fromUser?.occupation || ''
                                  }
                                };
                                handleViewProfile(tempFriend);
                              }}>
                           <div className="w-12 h-12 rounded-full bg-gray-200 flex items-center justify-center overflow-hidden">
-                            {request.fromUser && request.fromUser.photoUrl ? (
+                            {(request.fromUserData?.photoUrl || request.fromUser?.photoUrl) ? (
                               <img
-                                src={request.fromUser.photoUrl.startsWith('http') 
-                                  ? request.fromUser.photoUrl 
-                                  : `http://localhost:5002${request.fromUser.photoUrl}`}
-                                alt={request.fromUser.fullName || request.fromUser.username || 'User'}
+                                src={(request.fromUserData?.photoUrl || request.fromUser?.photoUrl).startsWith('http') 
+                                  ? (request.fromUserData?.photoUrl || request.fromUser?.photoUrl)
+                                  : `http://localhost:5002${request.fromUserData?.photoUrl || request.fromUser?.photoUrl}`}
+                                alt={(request.fromUserData?.fullName || request.fromUser?.fullName || request.fromUserData?.username || request.fromUser?.username || 'User')}
                                 className="w-full h-full object-cover"
                               />
                             ) : (
@@ -1469,7 +1538,7 @@ const Dashboard = () => {
                           </div>
                           <div>
                             <h3 className="font-semibold">
-                              {request.fromUser ? (request.fromUser.fullName || request.fromUser.username) : 'User'}
+                              {request.fromUserData?.fullName || request.fromUserData?.username || request.fromUser?.fullName || request.fromUser?.username || 'User'}
                             </h3>
                             <p className="text-sm text-gray-600">Sent you a friend request</p>
                             <p className="text-xs text-blue-500 underline">Click to view profile</p>
