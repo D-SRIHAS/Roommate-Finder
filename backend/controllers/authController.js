@@ -1,12 +1,28 @@
-const crypto = require('crypto');
-const jwt = require('jsonwebtoken');
+// Import models and dependencies
+const axios = require('axios');
 const OtpUser = require('../models/OtpUser');
 const User = require('../models/User');
-const { sendOtpEmail, sendVerificationEmail } = require('../config/nodemailer');
+const nodemailerConfig = require('../config/nodemailer');
+const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
+const { sendVerificationEmail } = require('../utils/email');
+const { generateOTP } = require('../utils/otp');
 
-// Generate a 6-digit OTP
-const generateOTP = () => {
-  return crypto.randomInt(100000, 999999).toString();
+// Send OTP via email
+const sendOtpEmail = async (email, otp) => {
+  try {
+    // Use the sendOtpEmail function from nodemailerConfig
+    const result = await nodemailerConfig.sendOtpEmail(email, otp);
+    return result;
+  } catch (error) {
+    console.error('Error sending OTP email:', error);
+    return { 
+      success: false, 
+      error: error.message,
+      errorType: error.code === 'EENVELOPE' ? 'email_undeliverable' : 'email_error'
+    };
+  }
 };
 
 // Generate a verification token using JWT
@@ -28,7 +44,6 @@ exports.sendOTP = async (req, res) => {
     }
 
     // Check if email exists in the main users database
-    const User = require('../models/User');
     const userExists = await User.findOne({ email });
     
     if (!userExists) {
@@ -171,7 +186,6 @@ exports.verifyOTP = async (req, res) => {
     
     try {
       // Update the main User model to mark email as verified
-      const User = require('../models/User');
       
       // Try exact match first
       console.log(`Looking for exact user match with email: ${email}`);
@@ -228,7 +242,6 @@ exports.sendVerificationEmail = async (req, res) => {
 
     // If no userId is provided, check if the email exists in the database
     if (!userId || userId === 'newuser') {
-      const User = require('../models/User');
       const userExists = await User.findOne({ email });
       
       if (!userExists) {

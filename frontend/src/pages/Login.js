@@ -7,10 +7,8 @@ console.log("Login Component is Rendering ✅");
 const Login = () => {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [message, setMessage] = useState("");
-  const [isSuccess, setIsSuccess] = useState(false);
+  const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
   const navigate = useNavigate();
 
   const handleSubmit = async (e) => {
@@ -33,12 +31,24 @@ const Login = () => {
       
       // Store verification status
       localStorage.setItem('emailVerified', response.data.user.emailVerified);
+      localStorage.setItem('phoneVerified', response.data.user.isPhoneVerified || false);
+      
+      // Store user data
+      localStorage.setItem('user', JSON.stringify(response.data.user));
       
       // Check if verification is required
       if (response.data.requireVerification) {
         // Redirect to verification page with email
         navigate('/verify-email', {
           state: { email: email }
+        });
+        return;
+      }
+      
+      // Check if phone verification is required
+      if (!response.data.user.isPhoneVerified) {
+        navigate('/phone-verification', {
+          state: { phoneNumber: response.data.user.phoneNumber }
         });
         return;
       }

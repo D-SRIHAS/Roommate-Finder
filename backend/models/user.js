@@ -12,7 +12,6 @@ const userSchema = new mongoose.Schema({
   email: {
     type: String,
     required: true,
-    unique: true,
     trim: true,
     lowercase: true
   },
@@ -25,7 +24,34 @@ const userSchema = new mongoose.Schema({
     required: true,
     minlength: 6
   },
+  phoneNumber: {
+    type: String,
+    required: true,
+    unique: true,
+    trim: true
+  },
+  isEmailVerified: {
+    type: Boolean,
+    default: false
+  },
+  isPhoneVerified: {
+    type: Boolean,
+    default: false
+  },
+  phoneVerificationOTP: {
+    code: String,
+    expiresAt: Date
+  },
+  emailVerificationOTP: {
+    code: String,
+    expiresAt: Date
+  },
   preferences: {
+    location: {
+      type: String,
+      enum: ['Mumbai', 'Delhi', 'Bangalore', 'Hyderabad', 'Chennai', 'Kolkata', 'Pune', 'Ahmedabad', 'Jaipur', 'Surat', 'Other'],
+      default: null,
+    },
     cleanliness: {
       type: String,
       enum: ['Very Clean', 'Moderately Clean', 'Somewhat Messy', 'Messy'],
@@ -170,6 +196,9 @@ const userSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// Add email index with unique constraint
+userSchema.index({ email: 1 }, { unique: true });
+
 // Hash password before saving
 userSchema.pre('save', async function(next) {
   // If validateBeforeSave is set to false, it means we're manually handling the password
@@ -204,4 +233,4 @@ userSchema.methods.comparePassword = async function (candidatePassword) {
 
 const User = mongoose.model("User", userSchema);
 
-module.exports = User;
+module.exports = User; 

@@ -4,6 +4,7 @@ const authController = require('../controllers/authController');
 const User = require('../models/User');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const { authenticateJWT } = require('../middleware/authMiddleware');
 
 // Send OTP to user's email
 router.post('/send-otp', authController.sendOTP);
@@ -51,10 +52,15 @@ router.post('/login', async (req, res) => {
     );
     
     // Check if email is verified and include appropriate flags
-    const requireVerification = !user.emailVerified;
+    // Use both emailVerified and isEmailVerified for consistency
+    const emailVerified = user.emailVerified || user.isEmailVerified;
+    const phoneVerified = user.isPhoneVerified || false;
+    
+    // Check if any verification is required
+    const requireVerification = !emailVerified;
     
     res.json({
-      message: user.emailVerified 
+      message: emailVerified 
         ? 'Login successful' 
         : 'Login successful. Please verify your email to access all features.',
       token,
@@ -62,10 +68,13 @@ router.post('/login', async (req, res) => {
         id: user._id,
         username: user.username,
         email: user.email,
-        emailVerified: user.emailVerified
+        phoneNumber: user.phoneNumber,
+        emailVerified: emailVerified,
+        isEmailVerified: emailVerified,
+        isPhoneVerified: phoneVerified
       },
       requireVerification,
-      redirectTo: requireVerification ? '/verify-email' : null
+      redirectTo: requireVerification ? '/verify-email' : phoneVerified ? null : '/phone-verification'
     });
   } catch (error) {
     console.error('Login error:', error);
@@ -76,11 +85,11 @@ router.post('/login', async (req, res) => {
 // Register user
 router.post('/register', async (req, res) => {
   try {
-    const { username, email, password } = req.body;
+    const { username, email, password, phoneNumber } = req.body;
     
     // Validate input
-    if (!username || !email || !password) {
-      return res.status(400).json({ message: 'Please provide username, email, and password' });
+    if (!username || !email || !password || !phoneNumber) {
+      return res.status(400).json({ message: 'Please provide username, email, password, and phone number' });
     }
     
     // Validate email format
@@ -92,7 +101,16 @@ router.post('/register', async (req, res) => {
       });
     }
     
-    console.log(`Attempting registration for email: ${email}, username: ${username}`);
+    // Validate phone number format
+    const phoneRegex = /^\+?[1-9]\d{1,14}$/;
+    if (!phoneRegex.test(phoneNumber)) {
+      return res.status(400).json({ 
+        message: 'Please provide a valid phone number',
+        phoneInvalid: true
+      });
+    }
+    
+    console.log(`Attempting registration for email: ${email}, username: ${username}, phone: ${phoneNumber}`);
     
     // Check if user already exists
     let existingUser = await User.findOne({ email });
@@ -113,12 +131,23 @@ router.post('/register', async (req, res) => {
       });
     }
     
+    existingUser = await User.findOne({ phoneNumber });
+    if (existingUser) {
+      console.log(`Registration failed: Phone number ${phoneNumber} already exists`);
+      return res.status(400).json({ 
+        message: `This phone number is already registered. Please use a different number or try logging in.`,
+        phoneExists: true
+      });
+    }
+    
     // Create new user
     const user = new User({
       username,
       email,
       password,
-      emailVerified: false // Explicitly set as false
+      phoneNumber,
+      emailVerified: false, // Explicitly set as false
+      isPhoneVerified: false // Explicitly set as false
     });
     
     await user.save();
@@ -141,7 +170,9 @@ router.post('/register', async (req, res) => {
         id: user._id,
         username: user.username,
         email: user.email,
-        emailVerified: false
+        phoneNumber: user.phoneNumber,
+        emailVerified: false,
+        isPhoneVerified: false
       },
       requireVerification: true,
       redirectTo: '/verify-email'
@@ -155,35 +186,71 @@ router.post('/register', async (req, res) => {
 // Direct verification endpoint (for testing)
 router.post('/verify-email-direct', async (req, res) => {
   try {
-    const { username } = req.body;
-    
-    if (!username) {
-      return res.status(400).json({ message: 'Username is required' });
-    }
-    
-    // Find user by username
-    const user = await User.findOne({ username });
+    const { email } = req.body;
+    const user = await User.findOne({ email });
     
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
     
-    // Mark email as verified
     user.emailVerified = true;
     await user.save();
     
-    res.json({
-      message: `Email for user ${username} marked as verified`,
-      success: true,
-      user: {
-        id: user._id,
-        username: user.username,
-        emailVerified: user.emailVerified
-      }
+    res.status(200).json({ message: 'Email verified successfully' });
+  } catch (error) {
+    console.error('Direct email verification error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Update email verification status
+router.post('/update-email-verification', authenticateJWT, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { email } = req.body;
+    
+    // Validate input
+    if (!email) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Email is required' 
+      });
+    }
+    
+    // Update user's email verification status
+    const user = await User.findById(userId);
+    
+    if (!user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found' 
+      });
+    }
+    
+    // Ensure email matches
+    if (user.email !== email) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Email does not match the authenticated user' 
+      });
+    }
+    
+    // Update verification status
+    user.emailVerified = true;
+    user.isEmailVerified = true; // Update both fields for consistency
+    await user.save();
+    
+    return res.status(200).json({ 
+      success: true, 
+      message: 'Email verification status updated successfully' 
     });
   } catch (error) {
-    console.error('Direct verification error:', error);
-    res.status(500).json({ message: 'Server error' });
+    console.error('Update email verification error:', error);
+    return res.status(500).json({ 
+      success: false, 
+      message: 'Server error', 
+      error: error.message 
+    });
   }
 });
 

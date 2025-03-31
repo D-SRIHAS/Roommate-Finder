@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const User = require('../models/User');
-const authenticate = require('../middleware/authenticate');
+const { authenticateJWT } = require('../middleware/authMiddleware');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
@@ -32,7 +32,7 @@ const upload = multer({
 });
 
 // Get profile
-router.get('/', authenticate, async (req, res) => {
+router.get('/', authenticateJWT, async (req, res) => {
   try {
     const user = await User.findById(req.user.userId).select('-password');
     
@@ -48,7 +48,7 @@ router.get('/', authenticate, async (req, res) => {
 });
 
 // Update profile
-router.put('/', authenticate, async (req, res) => {
+router.put('/', authenticateJWT, async (req, res) => {
   try {
     const { profile } = req.body;
     
@@ -75,7 +75,7 @@ router.put('/', authenticate, async (req, res) => {
 });
 
 // Upload profile photo
-router.post('/photo', authenticate, upload.single('photo'), async (req, res) => {
+router.post('/photo', authenticateJWT, upload.single('photo'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ message: 'No file uploaded' });
@@ -117,7 +117,7 @@ router.post('/photo', authenticate, upload.single('photo'), async (req, res) => 
 });
 
 // Update preferences
-router.put('/preferences', authenticate, async (req, res) => {
+router.put('/preferences', authenticateJWT, async (req, res) => {
   try {
     const { preferences } = req.body;
     

@@ -1,12 +1,11 @@
 const express = require("express");
+const router = express.Router();
 const User = require("../models/User");
-const authMiddleware = require("../middleware/authMiddleware");
+const { authenticateJWT } = require("../middleware/authMiddleware");
 const verificationMiddleware = require("../middleware/verificationMiddleware");
 const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
-
-const router = express.Router();
 
 // Configure multer for file uploads
 const storage = multer.diskStorage({
@@ -40,7 +39,7 @@ const upload = multer({
 
 // Get and Update User Profile
 router.route('/profile')
-  .get(authMiddleware, async (req, res) => {
+  .get(authenticateJWT, async (req, res) => {
     try {
       console.log("📩 Profile request received for user:", req.user);
       const userId = req.user.userId;
@@ -102,7 +101,7 @@ router.route('/profile')
       res.status(500).json({ message: "Error fetching profile" });
     }
   })
-  .put(authMiddleware, upload.single('photo'), async (req, res) => {
+  .put(authenticateJWT, upload.single('photo'), async (req, res) => {
     try {
       console.log("📩 Profile update request received");
       console.log("📦 Request body:", req.body);
@@ -164,7 +163,7 @@ router.route('/profile')
   });
 
 // Update user preferences
-router.post("/preferences", authMiddleware, async (req, res) => {
+router.post("/preferences", authenticateJWT, async (req, res) => {
   try {
     console.log("Received preferences update request:", req.body);
     const userId = req.user.userId;
@@ -191,7 +190,7 @@ router.post("/preferences", authMiddleware, async (req, res) => {
 });
 
 // Get matches with profile information
-router.get('/matches', authMiddleware, async (req, res) => {
+router.get('/matches', authenticateJWT, async (req, res) => {
   try {
     const userId = req.user.userId;
     console.log("📩 Matches request received for user:", userId);
@@ -211,7 +210,11 @@ router.get('/matches', authMiddleware, async (req, res) => {
     
     console.log(`📊 Found ${potentialMatches.length} potential matches`);
     
-    const matchesWithScores = potentialMatches.map(user => {
+    // Separate location-based matches and other matches
+    const locationMatches = [];
+    const otherMatches = [];
+    
+    potentialMatches.forEach(user => {
       console.log(`Processing match with user: ${user.username}`);
 
       // Set default numerical values for categories based on preference values
@@ -235,6 +238,14 @@ router.get('/matches', authMiddleware, async (req, res) => {
       // Track similarities
       let similarityScore = 0;
       let maxPossibleScore = 0;
+      
+      // Check for location match first
+      const isLocationMatch = 
+        currentUser.preferences.location && 
+        user.preferences.location && 
+        currentUser.preferences.location === user.preferences.location;
+      
+      console.log(`Location match check: current=${currentUser.preferences.location}, match=${user.preferences.location}, isMatch=${isLocationMatch}`);
       
       // Calculate similarity for each preference category
       for (const category in numericalPrefs) {
@@ -277,7 +288,7 @@ router.get('/matches', authMiddleware, async (req, res) => {
       
       console.log(`Final match with ${user.username}: ${matchPercentage}%`);
       
-      return {
+      const matchData = {
         _id: user._id,
         userId: user._id,
         username: user.username,
@@ -285,22 +296,39 @@ router.get('/matches', authMiddleware, async (req, res) => {
         preferences: user.preferences,
         matchPercentage: matchPercentage,
         cosineSimilarity: Math.round(matchPercentage * 0.7),
-        jaccardSimilarity: Math.round(matchPercentage * 0.3)
+        jaccardSimilarity: Math.round(matchPercentage * 0.3),
+        isLocationMatch
       };
+      
+      // Separate into location matches and other matches
+      if (isLocationMatch) {
+        locationMatches.push(matchData);
+      } else {
+        otherMatches.push(matchData);
+      }
     });
     
-    // Sort by match percentage (highest first)
-    const sortedMatches = matchesWithScores.sort((a, b) => b.matchPercentage - a.matchPercentage);
+    // Sort each group by match percentage (highest first)
+    locationMatches.sort((a, b) => b.matchPercentage - a.matchPercentage);
+    otherMatches.sort((a, b) => b.matchPercentage - a.matchPercentage);
+    
+    // Combine the sorted matches, with location matches first
+    const sortedMatches = [...locationMatches, ...otherMatches];
     
     if (sortedMatches.length > 0) {
       console.log("✅ First match example:", {
         matchPercentage: sortedMatches[0].matchPercentage,
-        username: sortedMatches[0].username
+        username: sortedMatches[0].username,
+        isLocationMatch: sortedMatches[0].isLocationMatch
       });
     }
     
-    console.log(`✅ Sending ${sortedMatches.length} matches`);
-    res.status(200).json({ matches: sortedMatches });
+    console.log(`✅ Sending ${sortedMatches.length} matches (${locationMatches.length} location matches, ${otherMatches.length} other matches)`);
+    res.status(200).json({ 
+      matches: sortedMatches,
+      locationMatchCount: locationMatches.length,
+      otherMatchCount: otherMatches.length
+    });
   } catch (error) {
     console.error('Error finding matches:', error);
     res.status(500).json({ message: 'Error finding matches' });
@@ -308,7 +336,7 @@ router.get('/matches', authMiddleware, async (req, res) => {
 });
 
 // Send friend request
-router.post("/friend-request", authMiddleware, verificationMiddleware, async (req, res) => {
+router.post("/friend-request", authenticateJWT, verificationMiddleware, async (req, res) => {
   try {
     let targetUserId = req.body.targetUserId;
     
@@ -433,7 +461,7 @@ router.post("/friend-request", authMiddleware, verificationMiddleware, async (re
 });
 
 // Handle friend request response (accept/reject)
-router.post("/friend-request-response", authMiddleware, async (req, res) => {
+router.post("/friend-request-response", authenticateJWT, async (req, res) => {
   try {
     const userId = req.user.userId;
     const { requestId, action } = req.body;
@@ -491,7 +519,7 @@ router.post("/friend-request-response", authMiddleware, async (req, res) => {
 });
 
 // Get friends list
-router.get("/friends", authMiddleware, async (req, res) => {
+router.get("/friends", authenticateJWT, async (req, res) => {
   try {
     console.log("📩 Friends list request received");
     const userId = req.user.userId;
@@ -548,7 +576,7 @@ router.put('/fix-preferences', async (req, res) => {
 });
 
 // Unfriend route
-router.post('/unfriend', authMiddleware, async (req, res) => {
+router.post('/unfriend', authenticateJWT, async (req, res) => {
   try {
     console.log("📩 Unfriend request received");
     const { friendId } = req.body;
@@ -579,7 +607,7 @@ router.post('/unfriend', authMiddleware, async (req, res) => {
 });
 
 // Add this new route to save and retrieve chat messages
-router.post('/send-message', authMiddleware, async (req, res) => {
+router.post('/send-message', authenticateJWT, async (req, res) => {
   try {
     const { recipientId, message } = req.body;
     const senderId = req.user.userId;
@@ -640,7 +668,7 @@ router.post('/send-message', authMiddleware, async (req, res) => {
   }
 });
 
-router.get('/messages/:friendId', authMiddleware, async (req, res) => {
+router.get('/messages/:friendId', authenticateJWT, async (req, res) => {
   try {
     const userId = req.user.userId;
     const friendId = req.params.friendId;
@@ -668,7 +696,7 @@ router.get('/messages/:friendId', authMiddleware, async (req, res) => {
 });
 
 // Get user profile by ID (for chats)
-router.get('/profile/:userId', authMiddleware, async (req, res) => {
+router.get('/profile/:userId', authenticateJWT, async (req, res) => {
   try {
     const targetUserId = req.params.userId;
     
@@ -688,7 +716,7 @@ router.get('/profile/:userId', authMiddleware, async (req, res) => {
 });
 
 // Get all messages with a specific user
-router.get('/messages/:userId', authMiddleware, async (req, res) => {
+router.get('/messages/:userId', authenticateJWT, async (req, res) => {
   try {
     const { userId } = req.params;
     const currentUserId = req.user.userId;
@@ -714,7 +742,7 @@ router.get('/messages/:userId', authMiddleware, async (req, res) => {
 });
 
 // Get all conversations for the current user
-router.get('/conversations', authMiddleware, async (req, res) => {
+router.get('/conversations', authenticateJWT, async (req, res) => {
   try {
     const currentUserId = req.user.userId;
     

@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import axios from 'axios';
 
 const Profile = () => {
   const navigate = useNavigate();
@@ -14,12 +15,15 @@ const Profile = () => {
   const [photoPreview, setPhotoPreview] = useState(null);
   const [loading, setLoading] = useState(true);
   const [isNewUser, setIsNewUser] = useState(false);
+  const [userProfile, setUserProfile] = useState(null);
+  const [error, setError] = useState(null);
+  
+  // Get verification status from localStorage
+  const emailVerified = localStorage.getItem('emailVerified') === 'true';
+  const phoneVerified = localStorage.getItem('phoneVerified') === 'true';
+  const userData = JSON.parse(localStorage.getItem('user') || '{}');
 
-  useEffect(() => {
-    fetchUserProfile();
-  }, []);
-
-  const fetchUserProfile = async () => {
+  const fetchUserProfile = useCallback(async () => {
     try {
       const token = localStorage.getItem('token');
       if (!token) {
@@ -27,10 +31,8 @@ const Profile = () => {
         return;
       }
 
-      const response = await fetch('http://localhost:5002/api/user/profile', {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
+      const response = await axios.get('http://localhost:5002/api/profile', {
+        headers: { Authorization: `Bearer ${token}` }
       });
 
       if (response.status === 401) {
@@ -38,7 +40,7 @@ const Profile = () => {
         return;
       }
 
-      const data = await response.json();
+      const data = response.data;
       
       if (!response.ok) {
         throw new Error(data.message || 'Failed to fetch profile');
@@ -54,21 +56,33 @@ const Profile = () => {
           fullName: data.profile.fullName || '',
           bio: data.profile.bio || '',
           address: data.profile.address || '',
-          phone: data.profile.phone || '',
+          phone: data.profile.phone || userData.phoneNumber || '',
           occupation: data.profile.occupation || ''
         });
         
         if (data.profile.photoUrl) {
           setPhotoPreview(`http://localhost:5002${data.profile.photoUrl}`);
         }
+      } else {
+        // For new users, pre-fill with user data from localStorage
+        setFormData(prev => ({
+          ...prev,
+          phone: userData.phoneNumber || ''
+        }));
       }
       
+      setUserProfile(data);
       setLoading(false);
     } catch (error) {
       console.error('Error fetching profile:', error);
+      setError('Failed to load profile');
       setLoading(false);
     }
-  };
+  }, [navigate, userData.phoneNumber]);
+
+  useEffect(() => {
+    fetchUserProfile();
+  }, [fetchUserProfile]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -105,25 +119,57 @@ const Profile = () => {
       // Create form data for file upload
       const formDataToSend = new FormData();
       
-      // Add profile data as JSON
-      formDataToSend.append('profile', JSON.stringify(formData));
+      // Format profile data in a compatible format for both API endpoints
+      const profileData = {
+        fullName: formData.fullName,
+        bio: formData.bio || '',
+        address: formData.address,
+        phone: phoneVerified ? userData.phoneNumber : formData.phone,
+        occupation: formData.occupation || ''
+      };
+      
+      console.log('Submitting profile data:', profileData);
+      
+      // Add profile data as JSON string
+      formDataToSend.append('profile', JSON.stringify(profileData));
       
       // Add photo if it exists
       if (photo) {
         formDataToSend.append('photo', photo);
       }
       
-      const response = await fetch('http://localhost:5002/api/user/profile', {
-        method: 'PUT',
-        headers: {
-          'Authorization': `Bearer ${token}`
-        },
-        body: formDataToSend
-      });
+      // Try the /api/user/profile endpoint first (more detailed one)
+      let response;
+      try {
+        response = await axios.put('http://localhost:5002/api/user/profile', formDataToSend, {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'multipart/form-data'
+          }
+        });
+        console.log('Profile updated using /api/user/profile endpoint');
+      } catch (userProfileErr) {
+        console.error('Error with /api/user/profile endpoint:', userProfileErr);
+        
+        // Fall back to /api/profile endpoint
+        try {
+          response = await axios.put('http://localhost:5002/api/profile', formDataToSend, {
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'Content-Type': 'multipart/form-data'
+            }
+          });
+          console.log('Profile updated using /api/profile endpoint');
+        } catch (profileErr) {
+          console.error('Error with /api/profile endpoint:', profileErr);
+          throw profileErr; // Re-throw the error from the second attempt
+        }
+      }
       
-      const data = await response.json();
+      console.log('Profile update response:', response);
       
-      if (response.ok) {
+      // Check HTTP status directly from the response
+      if (response.status >= 200 && response.status < 300) {
         alert('Profile updated successfully!');
         // If this is the first profile setup, redirect to the preferences tab
         if (isNewUser) {
@@ -132,16 +178,23 @@ const Profile = () => {
           navigate('/dashboard');
         }
       } else {
-        throw new Error(data.message || 'Failed to update profile');
+        throw new Error(response.data?.message || 'Failed to update profile');
       }
     } catch (error) {
       console.error('Error updating profile:', error);
       
       // More descriptive error message
-      if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
-        alert('Network error: Make sure your backend server is running on port 5002');
+      if (error.response) {
+        // The request was made and the server responded with a status code
+        // that falls out of the range of 2xx
+        console.error('Response data:', error.response.data);
+        alert(`Error ${error.response.status}: ${error.response.data?.message || error.response.statusText}`);
+      } else if (error.request) {
+        // The request was made but no response was received
+        alert('Network error: No response received from server');
       } else {
-        alert(error.message || 'An error occurred while updating profile');
+        // Something happened in setting up the request that triggered an Error
+        alert('Error: ' + error.message);
       }
     }
   };
@@ -197,99 +250,114 @@ const Profile = () => {
           </div>
           
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div>
-              <label className="block text-gray-700 mb-2" htmlFor="fullName">
-                Full Name <span className="text-red-500">*</span>
-              </label>
+            <div className="space-y-2">
+              <label className="block text-sm font-medium text-gray-700">Full Name *</label>
               <input
                 type="text"
-                id="fullName"
                 name="fullName"
                 value={formData.fullName}
                 onChange={handleChange}
-                className="w-full px-4 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full p-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
+                placeholder="Your full name"
                 required
               />
             </div>
             
-            <div>
-              <label className="block text-gray-700 mb-2" htmlFor="phone">
+            <div className="space-y-2">
+              <label className="block text-sm font-medium text-gray-700">
                 Phone Number
+                {phoneVerified && (
+                  <span className="ml-2 text-xs bg-green-100 text-green-800 px-2 py-1 rounded">
+                    ✓ Verified
+                  </span>
+                )}
               </label>
               <input
                 type="tel"
-                id="phone"
                 name="phone"
-                value={formData.phone}
-                onChange={handleChange}
-                className="w-full px-4 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                value={userData.phoneNumber || formData.phone}
+                onChange={phoneVerified ? undefined : handleChange}
+                className={`w-full p-2 border border-gray-300 rounded-md ${
+                  phoneVerified 
+                    ? 'bg-gray-100 cursor-not-allowed' 
+                    : 'focus:ring-blue-500 focus:border-blue-500'
+                }`}
+                placeholder="Your phone number"
+                disabled={phoneVerified}
               />
+              {phoneVerified && (
+                <p className="text-xs text-gray-500">
+                  Your phone number has been verified and cannot be changed.
+                </p>
+              )}
             </div>
             
-            <div>
-              <label className="block text-gray-700 mb-2" htmlFor="occupation">
-                Occupation
+            <div className="space-y-2">
+              <label className="block text-sm font-medium text-gray-700">
+                Email
+                {emailVerified && (
+                  <span className="ml-2 text-xs bg-green-100 text-green-800 px-2 py-1 rounded">
+                    ✓ Verified
+                  </span>
+                )}
               </label>
               <input
+                type="email"
+                name="email"
+                value={userData.email || ''}
+                className="w-full p-2 border border-gray-300 rounded-md bg-gray-100 cursor-not-allowed"
+                disabled={true}
+              />
+              <p className="text-xs text-gray-500">
+                Email cannot be changed.
+              </p>
+            </div>
+            
+            <div className="space-y-2">
+              <label className="block text-sm font-medium text-gray-700">Occupation</label>
+              <input
                 type="text"
-                id="occupation"
                 name="occupation"
                 value={formData.occupation}
                 onChange={handleChange}
-                className="w-full px-4 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full p-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
+                placeholder="Your occupation"
               />
             </div>
             
-            <div>
-              <label className="block text-gray-700 mb-2" htmlFor="address">
-                Address <span className="text-red-500">*</span>
-              </label>
+            <div className="space-y-2 md:col-span-2">
+              <label className="block text-sm font-medium text-gray-700">Address *</label>
               <input
                 type="text"
-                id="address"
                 name="address"
                 value={formData.address}
                 onChange={handleChange}
-                className="w-full px-4 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full p-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
+                placeholder="Your address"
                 required
               />
             </div>
-          </div>
-          
-          <div>
-            <label className="block text-gray-700 mb-2" htmlFor="bio">
-              Bio
-            </label>
-            <textarea
-              id="bio"
-              name="bio"
-              value={formData.bio}
-              onChange={handleChange}
-              rows="4"
-              className="w-full px-4 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="Tell others about yourself..."
-            ></textarea>
-          </div>
-          
-          <div className="flex justify-between">
-            <p className="text-sm text-gray-600">
-              <span className="text-red-500">*</span> Required fields
-            </p>
-            <div className="flex space-x-4">
-              <button
-                type="button"
-                onClick={() => navigate('/dashboard')}
-                className="px-6 py-2 border border-gray-300 rounded-md hover:bg-gray-100"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
-              >
-                {isNewUser ? 'Save & Continue' : 'Save Profile'}
-              </button>
+            
+            <div className="space-y-2 md:col-span-2">
+              <label className="block text-sm font-medium text-gray-700">Bio</label>
+              <textarea
+                name="bio"
+                value={formData.bio}
+                onChange={handleChange}
+                rows="4"
+                className="w-full p-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
+                placeholder="Tell potential roommates about yourself..."
+              ></textarea>
             </div>
+          </div>
+          
+          <div className="flex justify-center pt-4">
+            <button
+              type="submit"
+              className="px-6 py-3 bg-blue-600 text-white font-semibold rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+            >
+              {isNewUser ? 'Save & Continue' : 'Save Profile'}
+            </button>
           </div>
         </form>
       </div>

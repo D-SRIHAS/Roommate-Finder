@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import axios from "axios";
 
@@ -33,12 +33,13 @@ const EmailVerification = () => {
     }
   }, [location]);
 
-  const verifyEmailWithToken = async (token) => {
+  // Use useCallback to memoize the function
+  const verifyEmailWithToken = useCallback(async (token) => {
     setIsLoading(true);
     setMessage("Verifying your email...");
     
     try {
-      const response = await axios.post("http://localhost:5005/api/auth/verify-email-token", { token });
+      const response = await axios.post("http://localhost:5002/api/auth/verify-email-token", { token });
       
       if (response.data.success) {
         setIsSuccess(true);
@@ -47,8 +48,17 @@ const EmailVerification = () => {
         // Update localStorage to reflect verified status
         localStorage.setItem('emailVerified', 'true');
         
-        // Redirect to dashboard after 2 seconds
-        setTimeout(() => navigate("/dashboard"), 2000);
+        // Check if phone is already verified
+        const phoneVerified = localStorage.getItem('phoneVerified') === 'true';
+        
+        // Redirect to dashboard after 2 seconds if phone is verified, otherwise to phone verification
+        setTimeout(() => {
+          if (phoneVerified) {
+            navigate("/dashboard");
+          } else {
+            navigate("/phone-verification", { state: { email } });
+          }
+        }, 2000);
       } else {
         setIsSuccess(false);
         setMessage(response.data.message || "Failed to verify email. Please try using the OTP method instead.");
@@ -62,7 +72,17 @@ const EmailVerification = () => {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [navigate, email]);
+
+  useEffect(() => {
+    // Check URL for token parameter
+    const queryParams = new URLSearchParams(location.search);
+    const token = queryParams.get('token');
+    
+    if (token) {
+      verifyEmailWithToken(token);
+    }
+  }, [location.search, verifyEmailWithToken]); // Added verifyEmailWithToken as dependency
 
   const handleSendOtp = async (e) => {
     e.preventDefault();
@@ -72,10 +92,14 @@ const EmailVerification = () => {
     try {
       // Determine which endpoint to use based on verification method
       const endpoint = verificationMethod === 'otp' 
-        ? "http://localhost:5005/api/auth/send-otp" 
-        : "http://localhost:5005/api/auth/send-verification-email";
+        ? "http://localhost:5002/api/auth/send-otp" 
+        : "http://localhost:5002/api/auth/send-verification-email";
       
-      const response = await axios.post(endpoint, { email });
+      // Add token if available (for logged in users)
+      const token = localStorage.getItem('token');
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      
+      const response = await axios.post(endpoint, { email }, { headers });
       
       if (response.data.success) {
         setIsSuccess(true);
@@ -114,20 +138,45 @@ const EmailVerification = () => {
     setMessage("");
     
     try {
-      const response = await axios.post("http://localhost:5005/api/auth/verify-otp", { 
+      // Add token if available (for logged in users)
+      const token = localStorage.getItem('token');
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      
+      const response = await axios.post("http://localhost:5002/api/auth/verify-otp", { 
         email, 
         otp 
-      });
+      }, { headers });
       
       if (response.data.success) {
         setIsSuccess(true);
         setMessage("Email verified successfully! Redirecting...");
         
+        // Update the main user's email verification status
+        if (token) {
+          try {
+            await axios.post("http://localhost:5002/api/auth/update-email-verification", 
+              { email },
+              { headers: { Authorization: `Bearer ${token}` } }
+            );
+          } catch (updateError) {
+            console.error("Error updating main user verification status:", updateError);
+          }
+        }
+        
         // Update localStorage to reflect verified status
         localStorage.setItem('emailVerified', 'true');
         
-        // Redirect to dashboard after 2 seconds
-        setTimeout(() => navigate("/dashboard"), 2000);
+        // Check if phone is already verified
+        const phoneVerified = localStorage.getItem('phoneVerified') === 'true';
+        
+        // Redirect to dashboard after 2 seconds if phone is verified, otherwise to phone verification
+        setTimeout(() => {
+          if (phoneVerified) {
+            navigate("/dashboard");
+          } else {
+            navigate("/phone-verification", { state: { email } });
+          }
+        }, 2000);
       } else {
         setIsSuccess(false);
         setMessage(response.data.message || "Failed to verify OTP. Please try again.");
@@ -146,10 +195,18 @@ const EmailVerification = () => {
     setMessage("");
     
     try {
-      const response = await axios.post("http://localhost:5005/api/auth/resend-verification", { 
+      // Add token if available (for logged in users)
+      const token = localStorage.getItem('token');
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      
+      const endpoint = verificationMethod === 'otp'
+        ? "http://localhost:5002/api/auth/send-otp"
+        : "http://localhost:5002/api/auth/send-verification-email";
+        
+      const response = await axios.post(endpoint, { 
         email,
         method: verificationMethod
-      });
+      }, { headers });
       
       if (response.data.success) {
         setIsSuccess(true);

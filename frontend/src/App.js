@@ -1,48 +1,55 @@
 import { Routes, Route, useNavigate } from "react-router-dom";
 import React, { useEffect } from "react";
+import { io } from "socket.io-client";
 import Login from "./pages/Login";
 import Signup from "./pages/Signup";
 import Dashboard from "./pages/Dashboard";
 import Profile from "./pages/Profile";
 import EmailVerification from "./pages/EmailVerification";
+import PhoneVerification from './pages/PhoneVerification';
 
 function App() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    // WebSocket connection with error handling
+    // Socket.io connection with error handling
     const token = localStorage.getItem('token');
     if (!token) return; // Don't connect if no token
     
-    let ws = null;
+    let socket = null;
     
     try {
-      ws = new WebSocket(`ws://localhost:5002/ws?token=${token}`);
+      // Connect using Socket.io instead of raw WebSocket
+      socket = io('http://localhost:5002', {
+        auth: { token },
+        reconnection: true,
+        reconnectionAttempts: 5,
+        reconnectionDelay: 1000
+      });
       
-      ws.onopen = () => {
-        console.log('WebSocket Connected');
-      };
+      socket.on('connect', () => {
+        console.log('Socket.io Connected');
+      });
   
-      ws.onerror = (error) => {
-        console.error('WebSocket Error:', error);
-        // If we get an error, the token might be expired
-        // We'll leave the error handling to onclose
-      };
-  
-      ws.onclose = (event) => {
-        console.log('WebSocket Disconnected', event.code, event.reason);
-        
-        // If closed with certain codes that suggest authentication issues
-        if (event.code === 1000 || event.code === 1006) {
-          console.warn('WebSocket closed, possibly due to authentication issue');
-          // Don't remove token here, let the API requests handle auth failures
+      socket.on('connect_error', (error) => {
+        console.error('Socket.io Connection Error:', error.message);
+        // If we get a connection error, it might be due to authentication
+        if (error.message.includes('Authentication error')) {
+          console.warn('Socket connection failed due to authentication issue');
         }
-      };
+      });
   
-      ws.onmessage = (event) => {
+      socket.on('disconnect', (reason) => {
+        console.log('Socket.io Disconnected', reason);
+        
+        if (reason === 'io server disconnect') {
+          // The server has forcefully disconnected the socket
+          console.warn('Socket disconnected by server, possibly due to authentication issue');
+        }
+      });
+  
+      socket.on('message', (data) => {
         try {
-          const data = JSON.parse(event.data);
-          
           if (data.type === 'friendRequest') {
             // Show notification for new friend request
             alert(data.message);
@@ -56,17 +63,17 @@ function App() {
             navigate('/login');
           }
         } catch (error) {
-          console.error('Error parsing WebSocket message:', error);
+          console.error('Error handling socket message:', error);
         }
-      };
+      });
     } catch (error) {
-      console.error('Error setting up WebSocket:', error);
+      console.error('Error setting up Socket.io:', error);
     }
 
     // Clean up on component unmount
     return () => {
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.close();
+      if (socket) {
+        socket.disconnect();
       }
     };
   }, [navigate]);
@@ -81,6 +88,7 @@ function App() {
         <Route path="/profile" element={<Profile />} />
         <Route path="/verify-email" element={<EmailVerification />} />
         <Route path="/verify-email-token" element={<EmailVerification />} />
+        <Route path="/phone-verification" element={<PhoneVerification />} />
       </Routes>
     </>
   );
