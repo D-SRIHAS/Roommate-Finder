@@ -6,6 +6,77 @@ const verificationMiddleware = require("../middleware/verificationMiddleware");
 const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
+const axios = require('axios');
+
+// Helper function to geocode addresses
+const geocodeAddress = async (address) => {
+  try {
+    if (!address) return null;
+    
+    // For testing, we'll use a basic geocoding approach
+    // In production, use Google Maps Geocoding API with your API key
+    // const response = await axios.get(`https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=YOUR_API_KEY`);
+    // return { lat: response.data.results[0].geometry.location.lat, lng: response.data.results[0].geometry.location.lng };
+    
+    // Placeholder implementation with major Indian cities
+    const cities = {
+      'delhi': {lat: 28.6139, lng: 77.2090},
+      'mumbai': {lat: 19.0760, lng: 72.8777},
+      'bangalore': {lat: 12.9716, lng: 77.5946},
+      'hyderabad': {lat: 17.3850, lng: 78.4867},
+      'chennai': {lat: 13.0827, lng: 80.2707},
+      'kolkata': {lat: 22.5726, lng: 88.3639},
+      'pune': {lat: 18.5204, lng: 73.8567},
+      'ahmedabad': {lat: 23.0225, lng: 72.5714},
+      'jaipur': {lat: 26.9124, lng: 75.7873},
+      'gautam budh nagar': {lat: 28.5355, lng: 77.3910}, // Noida
+      'noida': {lat: 28.5355, lng: 77.3910},
+      'surat': {lat: 21.1702, lng: 72.8311},
+      'jagat': {lat: 28.2380, lng: 94.8260},
+    };
+    
+    // Find the city in the address
+    const addressLower = address.toLowerCase();
+    for (const [city, coords] of Object.entries(cities)) {
+      if (addressLower.includes(city)) {
+        console.log(`✅ Found coordinates for location: ${city} in address: ${address}`);
+        return coords;
+      }
+    }
+    
+    // If we have an exact city name match in the preferenceOptions
+    const exactCity = Object.keys(cities).find(city => 
+      city.toLowerCase() === addressLower || 
+      addressLower === city.toLowerCase()
+    );
+    
+    if (exactCity) {
+      console.log(`✅ Exact match for city: ${exactCity}`);
+      return cities[exactCity];
+    }
+    
+    // Default to Delhi if no match
+    console.log(`❌ No coordinates found for: ${address}, using default (Delhi)`);
+    return cities.delhi;
+  } catch (error) {
+    console.error('Error geocoding address:', error);
+    return null;
+  }
+};
+
+// Calculate distance between two points using Haversine formula (in km)
+const calculateDistance = (lat1, lon1, lat2, lon2) => {
+  const R = 6371; // Radius of the earth in km
+  const dLat = (lat2 - lat1) * Math.PI / 180;  
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = 
+    Math.sin(dLat/2) * Math.sin(dLat/2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+    Math.sin(dLon/2) * Math.sin(dLon/2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)); 
+  const distance = R * c; // Distance in km
+  return Math.round(distance * 10) / 10; // Round to 1 decimal place
+};
 
 // Configure multer for file uploads
 const storage = multer.diskStorage({
@@ -168,6 +239,11 @@ router.post("/preferences", authenticateJWT, async (req, res) => {
     console.log("Received preferences update request:", req.body);
     const userId = req.user.userId;
     const preferences = req.body.preferences;
+    
+    // Log important preference fields explicitly for debugging
+    console.log("Looking For (Gender):", preferences.gender);
+    console.log("Rent Budget:", preferences.rent);
+    console.log("Location:", preferences.location);
 
     const user = await User.findById(userId);
     if (!user) {
@@ -202,6 +278,18 @@ router.get('/matches', authenticateJWT, async (req, res) => {
       return res.status(400).json({ message: "Please complete your preferences first" });
     }
     
+    // Geocode current user's location
+    let currentUserCoords = null;
+    if (currentUser.profile && currentUser.profile.address) {
+      currentUserCoords = await geocodeAddress(currentUser.profile.address);
+      console.log(`Using profile address for geocoding: ${currentUser.profile.address}`);
+    } else if (currentUser.preferences && currentUser.preferences.location) {
+      currentUserCoords = await geocodeAddress(currentUser.preferences.location);
+      console.log(`Using preference location for geocoding: ${currentUser.preferences.location}`);
+    }
+    
+    console.log("Current user coordinates:", currentUserCoords);
+    
     // Find all users except current user who have completed their profiles
     const potentialMatches = await User.find({
       _id: { $ne: userId },
@@ -214,7 +302,7 @@ router.get('/matches', authenticateJWT, async (req, res) => {
     const locationMatches = [];
     const otherMatches = [];
     
-    potentialMatches.forEach(user => {
+    for (const user of potentialMatches) {
       console.log(`Processing match with user: ${user.username}`);
 
       // Set default numerical values for categories based on preference values
@@ -246,6 +334,32 @@ router.get('/matches', authenticateJWT, async (req, res) => {
         currentUser.preferences.location === user.preferences.location;
       
       console.log(`Location match check: current=${currentUser.preferences.location}, match=${user.preferences.location}, isMatch=${isLocationMatch}`);
+      
+      // Calculate distance if coordinates are available
+      let distance = null;
+      if (currentUserCoords) {
+        // Get coordinates for the potential match
+        let matchCoords = null;
+        if (user.profile && user.profile.address) {
+          matchCoords = await geocodeAddress(user.profile.address);
+          console.log(`Using profile address for match: ${user.profile.address}`);
+        } else if (user.preferences && user.preferences.location) {
+          matchCoords = await geocodeAddress(user.preferences.location);
+          console.log(`Using preference location for match: ${user.preferences.location}`);
+        }
+        
+        if (matchCoords) {
+          distance = calculateDistance(
+            currentUserCoords.lat, currentUserCoords.lng, 
+            matchCoords.lat, matchCoords.lng
+          );
+          console.log(`Distance calculation: ${distance} km between ${currentUser.username} and ${user.username}`);
+        } else {
+          console.log(`Could not get coordinates for user: ${user.username}`);
+        }
+      } else {
+        console.log(`Could not get coordinates for current user: ${currentUser.username}`);
+      }
       
       // Calculate similarity for each preference category
       for (const category in numericalPrefs) {
@@ -297,7 +411,8 @@ router.get('/matches', authenticateJWT, async (req, res) => {
         matchPercentage: matchPercentage,
         cosineSimilarity: Math.round(matchPercentage * 0.7),
         jaccardSimilarity: Math.round(matchPercentage * 0.3),
-        isLocationMatch
+        isLocationMatch,
+        distance: distance
       };
       
       // Separate into location matches and other matches
@@ -306,7 +421,7 @@ router.get('/matches', authenticateJWT, async (req, res) => {
       } else {
         otherMatches.push(matchData);
       }
-    });
+    }
     
     // Sort each group by match percentage (highest first)
     locationMatches.sort((a, b) => b.matchPercentage - a.matchPercentage);
@@ -319,7 +434,8 @@ router.get('/matches', authenticateJWT, async (req, res) => {
       console.log("✅ First match example:", {
         matchPercentage: sortedMatches[0].matchPercentage,
         username: sortedMatches[0].username,
-        isLocationMatch: sortedMatches[0].isLocationMatch
+        isLocationMatch: sortedMatches[0].isLocationMatch,
+        distance: sortedMatches[0].distance
       });
     }
     
@@ -340,10 +456,15 @@ router.post("/friend-request", authenticateJWT, verificationMiddleware, async (r
   try {
     let targetUserId = req.body.targetUserId;
     
-    // Fallback to userId if targetUserId is not provided
-    if (!targetUserId && req.body.userId) {
-      targetUserId = req.body.userId;
-      console.log('Found userId instead of targetUserId, using it as fallback');
+    // Check for different parameter naming conventions
+    if (!targetUserId) {
+      if (req.body.recipientId) {
+        targetUserId = req.body.recipientId;
+        console.log('Using recipientId parameter:', targetUserId);
+      } else if (req.body.userId) {
+        targetUserId = req.body.userId;
+        console.log('Using userId parameter:', targetUserId);
+      }
     }
     
     const fromUserId = req.user.userId;
@@ -352,7 +473,7 @@ router.post("/friend-request", authenticateJWT, verificationMiddleware, async (r
     console.log('To:', targetUserId);
     
     if (!targetUserId) {
-      console.error('❌ targetUserId is missing in the request');
+      console.error('❌ Target user ID is missing in the request');
       return res.status(400).json({ message: 'Target user ID is required' });
     }
 

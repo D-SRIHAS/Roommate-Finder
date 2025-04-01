@@ -8,7 +8,7 @@ import PreferenceForm from '../components/PreferenceForm';
 const Dashboard = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const [activeTab, setActiveTab] = useState('matches');
+  const [activeTab, setActiveTab] = useState('profile');
   const [userProfile, setUserProfile] = useState(null);
   const [matches, setMatches] = useState([]);
   const [friendRequests, setFriendRequests] = useState([]);
@@ -27,6 +27,7 @@ const Dashboard = () => {
   const [onlineUsers, setOnlineUsers] = useState([]);
   const [typingUsers, setTypingUsers] = useState({});
   const [unreadMessages, setUnreadMessages] = useState({});
+  const [viewingProfile, setViewingProfile] = useState(null);
   const token = localStorage.getItem('token');
   const socketRef = useRef(null);
   const typingTimeoutRef = useRef(null);
@@ -800,13 +801,17 @@ const Dashboard = () => {
   const handleSendFriendRequest = useCallback(async (userId) => {
     try {
       setLoading(true);
+      console.log("Sending friend request to:", userId);
+      
       const response = await axios.post(
         `http://localhost:5002/api/user/friend-request`,
-        { recipientId: userId },
+        { recipientId: userId }, // Use recipientId instead of userId
         {
           headers: { Authorization: `Bearer ${token}` }
         }
       );
+      
+      alert("Friend request sent successfully!");
       
       setSentRequests(prev => ({
         ...prev,
@@ -850,7 +855,29 @@ const Dashboard = () => {
         { requestId, action },
         { headers: { Authorization: `Bearer ${token}` } }
       );
-      fetchData(); // Refresh all data
+      
+      // If accepting the request, start a chat and switch to chat tab
+      if (action === 'accept') {
+        // Refresh data first to get updated friends list
+        await fetchData();
+        
+        // Find the friend from the request
+        const request = userProfile.friendRequests.find(req => req._id === requestId);
+        if (request) {
+          const friendId = request.from;
+          // Find the friend in the friends list
+          const friend = friends.find(f => f._id.toString() === friendId.toString());
+          if (friend) {
+            // Start a chat with this friend
+            handleChat(friend);
+            // Switch to chats tab
+            setActiveTab('chats');
+          }
+        }
+      } else {
+        // If rejecting, just refresh data
+        fetchData();
+      }
     } catch (error) {
       if (handleApiError(error, 'handleFriendRequestResponse')) {
         return;
@@ -878,12 +905,14 @@ const Dashboard = () => {
     navigate('/login');
   };
 
-  const handleViewProfile = (friend) => {
-    console.log('View profile - friend object:', friend);
-    console.log('View profile - friend._id:', friend._id);
-    console.log('View profile - friend.userId:', friend.userId);
-    setSelectedFriend(friend);
-    setShowProfileModal(true);
+  // Update the handleViewProfile function
+  const handleViewProfile = useCallback((user) => {
+    setViewingProfile(user);
+  }, []);
+
+  // Add function to close profile modal
+  const closeProfileModal = () => {
+    setViewingProfile(null);
   };
 
   // Update the handleUnfriend function
@@ -1708,7 +1737,9 @@ const Dashboard = () => {
                                             </div>
                                             <div>
                                               <p className="text-gray-500">Distance</p>
-                                              <p className="text-xl font-semibold">0 km</p>
+                                              <p className="text-xl font-semibold">
+                                                {match.distance ? `${match.distance} km` : 'Same area'}
+                                              </p>
                                             </div>
                                           </div>
                                           
@@ -1799,7 +1830,9 @@ const Dashboard = () => {
                                             </div>
                                             <div>
                                               <p className="text-gray-500">Distance</p>
-                                              <p className="text-xl font-semibold">0 km</p>
+                                              <p className="text-xl font-semibold">
+                                                {match.distance ? `${match.distance} km` : 'Same area'}
+                                              </p>
                                             </div>
                                           </div>
                                           
@@ -1865,14 +1898,123 @@ const Dashboard = () => {
                   )}
                   
                   {activeTab === 'messages' && (
-                    <div className="space-y-6">
-                      {/* Messages tab content would go here */}
+                    <div className="space-y-6 bg-white p-8 rounded-lg shadow-sm">
+                      <h2 className="text-3xl font-bold text-gray-800 mb-6">Connection Requests</h2>
+                      
+                      {/* Pending friend requests section */}
+                      {friendRequests.filter(request => request.status === 'pending').length > 0 ? (
+                        <div className="space-y-4">
+                          <h3 className="text-xl font-semibold text-gray-700 mb-4">Pending Requests</h3>
+                          <div className="divide-y">
+                            {friendRequests
+                              .filter(request => request.status === 'pending')
+                              .map(request => (
+                                <div key={request._id} className="py-4 flex items-center justify-between">
+                                  <div className="flex items-center">
+                                    <div className="w-12 h-12 rounded-full bg-gray-200 overflow-hidden mr-4">
+                                      {request.fromUser?.photoUrl ? (
+                                        <img 
+                                          src={request.fromUser.photoUrl.startsWith('http') 
+                                            ? request.fromUser.photoUrl 
+                                            : `http://localhost:5002${request.fromUser.photoUrl}`}
+                                          alt={request.fromUser?.fullName || 'User'}
+                                          className="w-full h-full object-cover"
+                                        />
+                                      ) : (
+                                        <div className="w-full h-full flex items-center justify-center">
+                                          <span className="text-xl">👤</span>
+                                        </div>
+                                      )}
+                                    </div>
+                                    <div>
+                                      <p className="font-semibold">{request.fromUser?.fullName || request.fromUser?.username || 'User'}</p>
+                                      <p className="text-sm text-gray-500">
+                                        {request.fromUser?.occupation && <span>{request.fromUser.occupation} • </span>}
+                                        {request.fromUser?.address || 'No location provided'}
+                                      </p>
+                                    </div>
+                                  </div>
+                                  <div className="flex space-x-3">
+                                    <button
+                                      onClick={() => handleFriendRequestResponse(request._id, 'accept')}
+                                      className="px-4 py-2 bg-green-500 text-white rounded-md hover:bg-green-600 transition-colors"
+                                    >
+                                      Accept
+                                    </button>
+                                    <button
+                                      onClick={() => handleFriendRequestResponse(request._id, 'reject')}
+                                      className="px-4 py-2 bg-gray-200 text-gray-700 rounded-md hover:bg-gray-300 transition-colors"
+                                    >
+                                      Decline
+                                    </button>
+                                  </div>
+                                </div>
+                              ))}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="bg-gray-50 p-6 rounded-xl text-center">
+                          <div className="text-5xl mb-4">💌</div>
+                          <h3 className="text-xl font-semibold text-gray-800 mb-2">No pending connection requests</h3>
+                          <p className="text-gray-600">
+                            When someone wants to connect with you, their request will appear here.
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Accepted connections section */}
+                      {friends.length > 0 && (
+                        <div className="mt-8 space-y-4">
+                          <h3 className="text-xl font-semibold text-gray-700 mb-4">Your Connections</h3>
+                          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                            {friends.map(friend => (
+                              <div key={friend._id} className="border rounded-lg shadow-sm overflow-hidden">
+                                <div className="flex items-center p-4">
+                                  <div className="w-12 h-12 rounded-full bg-gray-200 overflow-hidden mr-4">
+                                    {friend.profile?.photoUrl ? (
+                                      <img 
+                                        src={friend.profile.photoUrl.startsWith('http') 
+                                          ? friend.profile.photoUrl 
+                                          : `http://localhost:5002${friend.profile.photoUrl}`}
+                                        alt={friend.profile?.fullName || friend.username}
+                                        className="w-full h-full object-cover"
+                                      />
+                                    ) : (
+                                      <div className="w-full h-full flex items-center justify-center">
+                                        <span className="text-xl">👤</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                  <div>
+                                    <p className="font-semibold">{friend.profile?.fullName || friend.username}</p>
+                                    <p className="text-sm text-gray-500">
+                                      {friend.profile?.occupation && <span>{friend.profile.occupation} • </span>}
+                                      {friend.profile?.address || 'No location provided'}
+                                    </p>
+                                  </div>
+                                </div>
+                                <div className="bg-gray-50 p-3 flex justify-between items-center">
+                                  <button
+                                    onClick={() => handleChat(friend)}
+                                    className="w-full px-3 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 transition-colors flex items-center justify-center"
+                                  >
+                                    <svg className="w-4 h-4 mr-2" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                      <path d="M21 11.5C21.0034 12.8199 20.6951 14.1219 20.1 15.3C19.3944 16.7118 18.3098 17.8992 16.9674 18.7293C15.6251 19.5594 14.0782 19.9994 12.5 20C11.1801 20.0035 9.87812 19.6951 8.7 19.1L3 21L4.9 15.3C4.30493 14.1219 3.99656 12.8199 4 11.5C4.00061 9.92179 4.44061 8.37488 5.27072 7.03258C6.10083 5.69028 7.28825 4.6056 8.7 3.90003C9.87812 3.30496 11.1801 2.99659 12.5 3.00003H13C15.0843 3.11502 17.053 3.99479 18.5291 5.47089C20.0052 6.94699 20.885 8.91568 21 11V11.5Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                    </svg>
+                                    Chat
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                   
                   {activeTab === 'chats' && (
                     <div className="space-y-6">
-                      {/* Chats tab content would go here */}
+                      {renderChatsTab()}
                     </div>
                   )}
                 </div>
@@ -1887,6 +2029,201 @@ const Dashboard = () => {
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-xl p-8 max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
             {/* Profile modal content would go here */}
+          </div>
+        </div>
+      )}
+
+      {/* Profile View Modal */}
+      {viewingProfile && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl p-6 max-w-4xl w-full max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="text-2xl font-bold text-gray-800">User Profile</h3>
+              <button
+                onClick={closeProfileModal}
+                className="text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path>
+                </svg>
+              </button>
+            </div>
+            
+            <div className="flex flex-col md:flex-row gap-8">
+              {/* Profile Photo */}
+              <div className="w-full md:w-1/3">
+                <div className="bg-gradient-to-b from-blue-100 to-indigo-100 p-6 rounded-xl shadow-sm">
+                  <div className="w-40 h-40 mx-auto rounded-full bg-white p-2 shadow-md overflow-hidden">
+                    {viewingProfile.profile && viewingProfile.profile.photoUrl ? (
+                      <img
+                        src={viewingProfile.profile.photoUrl.startsWith('http')
+                          ? viewingProfile.profile.photoUrl
+                          : `http://localhost:5002${viewingProfile.profile.photoUrl}`}
+                        alt="Profile" 
+                        className="w-full h-full object-cover rounded-full"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center rounded-full bg-gray-200">
+                        <span className="text-5xl">👤</span>
+                      </div>
+                    )}
+                  </div>
+                  
+                  <h3 className="text-xl font-bold text-center mt-4 text-gray-800">
+                    {viewingProfile.profile?.fullName || viewingProfile.username}
+                  </h3>
+                  
+                  {viewingProfile.profile?.occupation && (
+                    <p className="text-center text-blue-600">{viewingProfile.profile.occupation}</p>
+                  )}
+
+                  <div className="mt-6 text-center">
+                    <button
+                      onClick={() => {
+                        console.log("Sending friend request from modal to:", viewingProfile._id);
+                        handleSendFriendRequest(viewingProfile._id);
+                      }}
+                      className="px-6 py-3 bg-gradient-to-r from-blue-500 to-sky-600 text-white rounded-full font-medium shadow-md hover:from-blue-600 hover:to-sky-700 transition-all"
+                    >
+                      Connect as Roommate
+                    </button>
+                  </div>
+                </div>
+              </div>
+              
+              {/* Profile Details */}
+              <div className="w-full md:w-2/3 space-y-6">
+                <div className="bg-white p-6 rounded-xl shadow-sm">
+                  <h3 className="text-xl font-semibold mb-6 text-gray-700">Profile Details</h3>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                      <p className="text-sm text-gray-500">Location</p>
+                      <p className="text-gray-800 font-medium">{viewingProfile.profile?.address || viewingProfile.preferences?.location || 'Not provided'}</p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-gray-500">Looking For</p>
+                      <p className="text-gray-800 font-medium">{viewingProfile.preferences?.gender || 'Any'} Roommate</p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-gray-500">Budget</p>
+                      <p className="text-gray-800 font-medium">
+                        {viewingProfile.preferences?.rent ? `₹ ${viewingProfile.preferences.rent}` : 'Not specified'}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-gray-500">Occupation</p>
+                      <p className="text-gray-800 font-medium">{viewingProfile.profile?.occupation || 'Not provided'}</p>
+                    </div>
+                    <div className="col-span-2">
+                      <p className="text-sm text-gray-500">Bio</p>
+                      <p className="text-gray-800">{viewingProfile.profile?.bio || 'No bio provided'}</p>
+                    </div>
+                  </div>
+                </div>
+                
+                {viewingProfile.preferences && Object.keys(viewingProfile.preferences).length > 0 && (
+                  <div className="bg-white p-6 rounded-xl shadow-sm">
+                    <h3 className="text-xl font-semibold mb-6 text-gray-700">Roommate Preferences</h3>
+                    
+                    <div className="grid grid-cols-2 gap-4">
+                      {viewingProfile.preferences.gender && (
+                        <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
+                          <p className="font-medium text-gray-600">Looking For</p>
+                          <div className="flex items-center mt-2">
+                            <span className="text-2xl mr-2">
+                              {viewingProfile.preferences.gender === 'Male' ? '👨' : 
+                               viewingProfile.preferences.gender === 'Female' ? '👩' : '👥'}
+                            </span>
+                            <p className="text-gray-800 font-medium">{viewingProfile.preferences.gender} Roommate</p>
+                          </div>
+                        </div>
+                      )}
+                      
+                      {viewingProfile.preferences.rent && (
+                        <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
+                          <p className="font-medium text-gray-600">Rent Budget</p>
+                          <div className="flex items-center mt-2">
+                            <span className="text-2xl mr-2">₹</span>
+                            <p className="text-gray-800 font-medium">{viewingProfile.preferences.rent}</p>
+                          </div>
+                        </div>
+                      )}
+                      
+                      {viewingProfile.preferences.cleanliness && (
+                        <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
+                          <p className="font-medium text-gray-600">Cleanliness</p>
+                          <div className="flex items-center mt-2">
+                            <span className="text-2xl mr-2">✨</span>
+                            <p className="text-gray-800 font-medium">{viewingProfile.preferences.cleanliness}</p>
+                          </div>
+                        </div>
+                      )}
+                      
+                      {viewingProfile.preferences.smoking && (
+                        <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
+                          <p className="font-medium text-gray-600">Smoking</p>
+                          <div className="flex items-center mt-2">
+                            <span className="text-2xl mr-2">🚭</span>
+                            <p className="text-gray-800 font-medium">{viewingProfile.preferences.smoking}</p>
+                          </div>
+                        </div>
+                      )}
+                      
+                      {viewingProfile.preferences.pets && (
+                        <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
+                          <p className="font-medium text-gray-600">Pets</p>
+                          <div className="flex items-center mt-2">
+                            <span className="text-2xl mr-2">🐾</span>
+                            <p className="text-gray-800 font-medium">{viewingProfile.preferences.pets}</p>
+                          </div>
+                        </div>
+                      )}
+                      
+                      {viewingProfile.preferences.workSchedule && (
+                        <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
+                          <p className="font-medium text-gray-600">Work Schedule</p>
+                          <div className="flex items-center mt-2">
+                            <span className="text-2xl mr-2">⏱️</span>
+                            <p className="text-gray-800 font-medium">{viewingProfile.preferences.workSchedule}</p>
+                          </div>
+                        </div>
+                      )}
+                      
+                      {viewingProfile.preferences.socialLevel && (
+                        <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
+                          <p className="font-medium text-gray-600">Social Level</p>
+                          <div className="flex items-center mt-2">
+                            <span className="text-2xl mr-2">👥</span>
+                            <p className="text-gray-800 font-medium">{viewingProfile.preferences.socialLevel}</p>
+                          </div>
+                        </div>
+                      )}
+                      
+                      {viewingProfile.preferences.guestPreference && (
+                        <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
+                          <p className="font-medium text-gray-600">Guest Policy</p>
+                          <div className="flex items-center mt-2">
+                            <span className="text-2xl mr-2">👋</span>
+                            <p className="text-gray-800 font-medium">{viewingProfile.preferences.guestPreference}</p>
+                          </div>
+                        </div>
+                      )}
+                      
+                      {viewingProfile.preferences.music && (
+                        <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
+                          <p className="font-medium text-gray-600">Music/Noise</p>
+                          <div className="flex items-center mt-2">
+                            <span className="text-2xl mr-2">🎵</span>
+                            <p className="text-gray-800 font-medium">{viewingProfile.preferences.music}</p>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         </div>
       )}

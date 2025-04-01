@@ -21,6 +21,7 @@ const PreferenceForm = ({ onSubmit, initialValues }) => {
         ...prev,
         ...initialValues
       }));
+      console.log("Initialized preferences from props:", initialValues);
     }
   }, [initialValues]);
 
@@ -119,14 +120,36 @@ const PreferenceForm = ({ onSubmit, initialValues }) => {
   };
 
   const handleChange = (category, value) => {
-    setPreferences(prev => ({
-      ...prev,
-      [category]: value
-    }));
+    setPreferences(prev => {
+      const updated = {
+        ...prev,
+        [category]: value
+      };
+      console.log(`Updated ${category} preference to: ${value}`);
+      return updated;
+    });
   };
 
   const handleSubmit = (e) => {
     e.preventDefault();
+    console.log("Submitting preferences:", preferences);
+    
+    // Ensure the required preferences are set
+    if (!preferences.location) {
+      alert('Please select a preferred location');
+      return;
+    }
+    
+    if (!preferences.gender) {
+      alert('Please select who you are looking for (Male/Female/Any)');
+      return;
+    }
+    
+    if (!preferences.rent) {
+      alert('Please select your rent budget');
+      return;
+    }
+    
     onSubmit(preferences);
   };
 
@@ -158,10 +181,11 @@ const PreferenceForm = ({ onSubmit, initialValues }) => {
 
   const validateForm = () => {
     // Check that at least 5 preferences are set (not empty string)
-    const requiredFields = ['location', 'gender'];
+    const requiredFields = ['location', 'gender', 'rent'];
     const selectedCount = Object.values(preferences).filter(value => value !== '').length;
     const hasRequiredFields = requiredFields.every(field => preferences[field] !== '');
     
+    console.log("Required fields check:", hasRequiredFields, "Selected count:", selectedCount);
     return hasRequiredFields && selectedCount >= 5;
   };
 
