@@ -1714,25 +1714,30 @@ const Dashboard = () => {
                     let photoUrl = userProfile?.profile?.photoUrl;
                     
                     if (photoFile) {
-                      const photoResponse = await axios.post(
-                        `${window.process.env.REACT_APP_BACKEND_URL || 'http://localhost:5002'}/api/user/profile/image`,
-                        formData,
-                        { 
-                          headers: { 
-                            'Authorization': `Bearer ${token}`,
-                            'Content-Type': 'multipart/form-data'
-                          } 
+                      try {
+                        const photoResponse = await axios.post(
+                          `${window.process.env.REACT_APP_BACKEND_URL || 'http://localhost:5002'}/api/user/profile/image`,
+                          formData,
+                          { 
+                            headers: { 
+                              'Authorization': `Bearer ${token}`,
+                              'Content-Type': 'multipart/form-data'
+                            } 
+                          }
+                        );
+                        
+                        if (photoResponse.data && photoResponse.data.photoUrl) {
+                          photoUrl = photoResponse.data.photoUrl;
+                          console.log("Photo uploaded successfully:", photoUrl);
                         }
-                      );
-                      
-                      if (photoResponse.data && photoResponse.data.photoUrl) {
-                        photoUrl = photoResponse.data.photoUrl;
+                      } catch (photoError) {
+                        console.error("Error uploading photo:", photoError);
+                        // Continue with profile update even if photo upload fails
                       }
                     }
                     
                     // Now update profile data
                     const profileData = {
-                      username: profileUsername,
                       profile: {
                         fullName: profileFullName,
                         bio: profileBio,
@@ -1748,14 +1753,18 @@ const Dashboard = () => {
                     const response = await axios.put(
                       `${window.process.env.REACT_APP_BACKEND_URL || 'http://localhost:5002'}/api/user/profile`,
                       profileData,
-                      { headers: { Authorization: `Bearer ${token}` } }
+                      { 
+                        headers: { 
+                          'Authorization': `Bearer ${token}`,
+                          'Content-Type': 'application/json'
+                        } 
+                      }
                     );
                     
                     if (response.data) {
                       // Update user profile state with the new data
                       setUserProfile(prevProfile => ({
                         ...prevProfile,
-                        username: profileUsername,
                         profile: {
                           ...prevProfile.profile,
                           fullName: profileFullName,
@@ -1873,9 +1882,16 @@ const Dashboard = () => {
                               <img src={photoPreview} alt="Preview" className="h-full w-full object-cover" />
                             ) : userProfile?.profile?.photoUrl ? (
                               <img 
-                                src={`${window.process.env.REACT_APP_BACKEND_URL || 'http://localhost:5002'}${userProfile.profile.photoUrl}`} 
+                                src={userProfile.profile.photoUrl.startsWith('http') 
+                                  ? userProfile.profile.photoUrl
+                                  : `${window.process.env.REACT_APP_BACKEND_URL || 'http://localhost:5002'}${userProfile.profile.photoUrl}`} 
                                 alt={userProfile.username} 
                                 className="h-full w-full object-cover"
+                                onError={(e) => {
+                                  console.error("Image failed to load:", e);
+                                  e.target.onerror = null;
+                                  e.target.src = 'https://via.placeholder.com/150?text=Profile';
+                                }}
                               />
                             ) : (
                               <div className="h-full w-full flex items-center justify-center bg-gray-300 text-white text-xl font-bold">

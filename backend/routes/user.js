@@ -235,6 +235,59 @@ router.route('/profile')
     }
   });
 
+// Profile Image Upload Endpoint
+router.post('/profile/image', authenticateJWT, upload.single('profileImage'), async (req, res) => {
+  try {
+    console.log("📩 Profile image upload request received");
+    
+    if (!req.file) {
+      console.error("❌ No image file provided");
+      return res.status(400).json({ message: "No image file provided" });
+    }
+    
+    console.log("📷 Uploaded file:", req.file);
+    
+    const userId = req.user.userId;
+    const user = await User.findById(userId);
+    
+    if (!user) {
+      console.error("❌ User not found with ID:", userId);
+      return res.status(404).json({ message: "User not found" });
+    }
+    
+    // If user already has a profile photo, delete it
+    if (user.profile?.photoUrl && !user.profile.photoUrl.startsWith('http')) {
+      const oldPhotoPath = path.join(__dirname, '..', user.profile.photoUrl);
+      console.log('Checking for existing photo at:', oldPhotoPath);
+      
+      if (fs.existsSync(oldPhotoPath)) {
+        console.log('Deleting old photo:', oldPhotoPath);
+        fs.unlinkSync(oldPhotoPath);
+      }
+    }
+    
+    // Set the new photo URL in user profile
+    const photoUrl = `/uploads/${req.file.filename}`;
+    
+    if (!user.profile) {
+      user.profile = { photoUrl };
+    } else {
+      user.profile.photoUrl = photoUrl;
+    }
+    
+    await user.save();
+    
+    console.log("✅ Profile image updated successfully");
+    res.status(200).json({ 
+      message: "Profile image uploaded successfully", 
+      photoUrl: photoUrl 
+    });
+  } catch (error) {
+    console.error("🚨 Error uploading profile image:", error);
+    res.status(500).json({ message: "Failed to upload profile image" });
+  }
+});
+
 // Update user preferences
 router.post("/preferences", authenticateJWT, async (req, res) => {
   try {
