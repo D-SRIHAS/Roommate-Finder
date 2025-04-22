@@ -1,14 +1,19 @@
+/* eslint-disable react-hooks/rules-of-hooks */
+/* eslint-disable react-hooks/exhaustive-deps */
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useLocation, Link } from 'react-router-dom';
 import axios from 'axios';
 import { io } from 'socket.io-client';
 import './Dashboard.css';
 import PreferenceForm from '../components/PreferenceForm';
+import Chat from '../components/Chat';
 
 const Dashboard = () => {
+  console.log("Dashboard component rendering");
+  
   const navigate = useNavigate();
   const location = useLocation();
-  const [activeTab, setActiveTab] = useState('profile');
+  const [activeTab, setActiveTab] = useState('dashboard');
   const [userProfile, setUserProfile] = useState(null);
   const [matches, setMatches] = useState([]);
   const [friendRequests, setFriendRequests] = useState([]);
@@ -17,7 +22,7 @@ const Dashboard = () => {
   const [error, setError] = useState(null);
   const [selectedFriend, setSelectedFriend] = useState(null);
   const [showProfileModal, setShowProfileModal] = useState(false);
-  const [profileIncomplete, setProfileIncomplete] = useState(false);
+  const [profileIncomplete, setProfileIncomplete] = useState(true);
   const [editingPreferences, setEditingPreferences] = useState(false);
   const [sentRequests, setSentRequests] = useState({});
   const [currentMessage, setCurrentMessage] = useState('');
@@ -28,11 +33,69 @@ const Dashboard = () => {
   const [typingUsers, setTypingUsers] = useState({});
   const [unreadMessages, setUnreadMessages] = useState({});
   const [viewingProfile, setViewingProfile] = useState(null);
+  const [isTyping, setIsTyping] = useState(false);
+  const [typing, setTyping] = useState(false);
+  const [editingProfile, setEditingProfile] = useState(false);
+  const [profileUsername, setProfileUsername] = useState('');
+  const [profileFullName, setProfileFullName] = useState('');
+  const [profileBio, setProfileBio] = useState('');
+  const [profileInterests, setProfileInterests] = useState('');
+  const [profileGender, setProfileGender] = useState('');
+  const [profileAge, setProfileAge] = useState('');
+  const [profilePhone, setProfilePhone] = useState('');
+  const [profileLocation, setProfileLocation] = useState('');
+  const [photoFile, setPhotoFile] = useState(null);
+  const [photoPreview, setPhotoPreview] = useState(null);
   const token = localStorage.getItem('token');
   const socketRef = useRef(null);
   const typingTimeoutRef = useRef(null);
   const chatWindowRef = useRef(null);
   const messagesEndRef = useRef(null);
+  const [messageInput, setMessageInput] = useState('');
+  const [initialized, setInitialized] = useState(false);
+  const [renderCount, setRenderCount] = useState(0);
+
+  // Debug render counts - run only once
+  useEffect(() => {
+    const currentCount = renderCount + 1;
+    setRenderCount(currentCount);
+    console.log(`Dashboard has rendered ${currentCount} times`);
+    
+    // If too many renders, this might be a loop - log a warning
+    if (currentCount > 10 && currentCount % 5 === 0) {
+      console.warn(`Many renders detected (${currentCount}), might be a render loop!`);
+    }
+  }, []); // Only run once on mount
+
+  // Error handling function - define this before any conditional returns
+  const handleApiError = useCallback((error, functionName) => {
+    console.error(`Error in ${functionName}:`, error);
+    
+    if (error.response) {
+      if (error.response.status === 401) {
+        // Unauthorized - token expired or invalid
+        localStorage.removeItem('token');
+        alert('Your session has expired. Please log in again.');
+        navigate('/login');
+        return true;
+      } else if (error.response.data && error.response.data.message) {
+        // Server returned an error message
+        console.error(`Server error in ${functionName}:`, error.response.data.message);
+        setError(error.response.data.message);
+      }
+    } else if (error.request) {
+      // Request made but no response received
+      console.error(`No response received in ${functionName}:`, error.request);
+      setError('No response from server. Please check your internet connection and try again.');
+      return true;
+    } else {
+      // Error in setting up request
+      console.error(`Request setup error in ${functionName}:`, error.message);
+      setError('An error occurred. Please try again.');
+    }
+    
+    return false;
+  }, [navigate]);
 
   // Scroll to bottom of chat
   const scrollToBottom = useCallback(() => {
@@ -41,293 +104,100 @@ const Dashboard = () => {
     }
   }, []);
 
-  // Effect to scroll to bottom when messages change
-  useEffect(() => {
-    // Only scroll to bottom if there are messages and the activeConversation has changed
-    const hasMessages = activeConversation && 
-      activeConversation.messages &&
-      activeConversation.messages.length > 0;
+  // Handle chat with a friend - Define this early to avoid hook ordering issues
+  const handleChat = useCallback((friend) => {
+    if (!friend || !friend._id) return;
+    
+    // Set the selected friend
+    setSelectedFriend(friend);
+    
+    // Find existing conversation or create a new one
+    const existingConversation = conversations.find(
+      conversation => conversation.friendId === friend._id
+    );
+    
+    if (existingConversation) {
+      // Use existing conversation
+      setActiveConversation(existingConversation);
       
-    if (hasMessages && messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
-    }
-  }, [activeConversation]); // Now using activeConversation as the dependency
-
-  // Check verification status and redirect if needed
-  useEffect(() => {
-    // First check if token exists
-    if (!token) {
-      navigate('/login');
-      return;
+      // Mark messages as read
+      if (unreadMessages[friend._id]) {
+        setUnreadMessages(prev => ({ ...prev, [friend._id]: 0 }));
+      }
+    } else {
+      // Create new conversation
+      const newConversation = {
+        id: `conversation-${Date.now()}`,
+        friendId: friend._id,
+        name: friend.username || 'Unknown',
+        avatar: friend.profileImage || '',
+        messages: [],
+        lastMessage: '',
+        lastMessageTime: null
+      };
+      
+      setConversations(prev => [...prev, newConversation]);
+      setActiveConversation(newConversation);
     }
     
-    // Check verification status
-    const emailVerified = localStorage.getItem('emailVerified') === 'true';
-    const phoneVerified = localStorage.getItem('phoneVerified') === 'true';
-    
-    if (!emailVerified && !phoneVerified) {
-      // Neither email nor phone verified
-      navigate('/verify-email');
-    } else if (!emailVerified) {
-      // Email not verified
-      navigate('/verify-email');
-    } else if (!phoneVerified) {
-      // Phone not verified
-      const user = JSON.parse(localStorage.getItem('user') || '{}');
-      navigate('/phone-verification', { 
-        state: { phoneNumber: user.phoneNumber || '' }
-      });
+    // Switch to chats tab
+    setActiveTab('chats');
+  }, [conversations, unreadMessages]);
+
+  // Fetch user data function - defined at component level
+  const fetchData = async () => {
+    try {
+      setLoading(true);
+      const response = await axios.get(`${window.process.env.REACT_APP_BACKEND_URL || 'http://localhost:5002'}/api/user/profile`);
+      const userData = response.data;
+      
+      console.log("Profile data:", userData);
+      
+      // Only check phone verification if it's a new signup
+      if (userData.isNewSignup && !userData.isPhoneVerified) {
+        navigate('/verify-phone');
+        return;
+      }
+      
+      setUserProfile(userData);
+      setProfileIncomplete(!userData.profileCompleted);
+      
+      try {
+        // Fetch friend requests
+        const requestsResponse = await axios.get(`${window.process.env.REACT_APP_BACKEND_URL || 'http://localhost:5002'}/api/user/friend-requests`);
+        console.log("Friend requests data:", requestsResponse.data);
+        setFriendRequests(requestsResponse.data.requests || []);
+      } catch (error) {
+        console.error("Error fetching friend requests:", error);
+      }
+      
+      try {
+        // Fetch friends list
+        const friendsResponse = await axios.get(`${window.process.env.REACT_APP_BACKEND_URL || 'http://localhost:5002'}/api/user/friends`);
+        console.log("Friends data:", friendsResponse.data);
+        setFriends(friendsResponse.data.friends || []);
+      } catch (error) {
+        console.error("Error fetching friends:", error);
+      }
+      
+      try {
+        // Fetch matches
+        const matchesResponse = await axios.get(`${window.process.env.REACT_APP_BACKEND_URL || 'http://localhost:5002'}/api/user/matches`);
+        console.log("Matches data:", matchesResponse.data);
+        setMatches(matchesResponse.data.matches || []);
+      } catch (error) {
+        console.error("Error fetching matches:", error);
+      }
+      
+      setLoading(false);
+    } catch (error) {
+      setLoading(false);
+      const redirected = handleApiError(error, 'fetchData');
+      if (!redirected) {
+        setError('Failed to load profile data. Please try again.');
+      }
     }
-  }, [token, navigate]);
-
-  // Socket.io connection
-  useEffect(() => {
-    if (!token || !userProfile?._id) return;
-
-    // Connect to Socket.io server
-    const newSocket = io('http://localhost:5002', {
-      auth: { token },
-      query: { token },
-      reconnection: true,
-      reconnectionAttempts: 5,
-      reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000,
-      timeout: 20000
-    });
-    
-    socketRef.current = newSocket;
-    setSocket(newSocket);
-
-    // Socket event listeners
-    newSocket.on('connect', () => {
-      console.log('Connected to Socket.io server');
-    });
-
-    newSocket.on('connect_error', (error) => {
-      console.error('Socket connection error:', error.message);
-      // Attempt to reconnect after a delay
-      setTimeout(() => {
-        if (!newSocket.connected) {
-          newSocket.connect();
-        }
-      }, 5000);
-    });
-
-    newSocket.on('disconnect', (reason) => {
-      console.log('Disconnected from Socket.io server:', reason);
-      if (reason === 'io server disconnect') {
-        // Server initiated disconnect, try to reconnect
-        newSocket.connect();
-      }
-    });
-
-    // Handle new message
-    newSocket.on('newMessage', (message) => {
-      console.log('New message received:', message);
-      
-      // Convert ISO timestamp string to Date object
-      if (typeof message.timestamp === 'string') {
-        message.timestamp = new Date(message.timestamp);
-      }
-      
-      const isSentByMe = message.sender === userProfile._id;
-      const partnerId = isSentByMe ? message.recipient : message.sender;
-      
-      setConversations(prevConversations => {
-        // Find existing conversation
-        const existingConversationIndex = prevConversations.findIndex(
-          conversation => conversation.friendId === partnerId
-        );
-        
-        if (existingConversationIndex > -1) {
-          // Update existing conversation
-          const updatedConversations = [...prevConversations];
-          const existingConversation = { ...updatedConversations[existingConversationIndex] };
-          
-          // Format the message for the UI
-          const formattedMessage = {
-            _id: message._id,
-            text: message.text,
-            sender: isSentByMe ? 'me' : partnerId,
-            timestamp: message.timestamp,
-            read: message.read || false
-          };
-          
-          // Add message to conversation
-          existingConversation.messages = [
-            ...existingConversation.messages,
-            formattedMessage
-          ];
-          
-          // Update last message info
-          existingConversation.lastMessage = message.text;
-          existingConversation.lastMessageTime = message.timestamp;
-          
-          // Update in array
-          updatedConversations[existingConversationIndex] = existingConversation;
-          
-          // If not active conversation and not sent by me, increment unread count
-          if (!activeConversation || activeConversation.friendId !== partnerId) {
-            if (!isSentByMe) {
-              setUnreadMessages(prev => ({
-                ...prev,
-                [partnerId]: (prev[partnerId] || 0) + 1
-              }));
-            }
-          } else {
-            // If this is the active conversation, mark as read
-            if (!isSentByMe && socket) {
-              socket.emit('markAsRead', { messageId: message._id });
-            }
-            
-            // Scroll to bottom
-            setTimeout(() => {
-              if (messagesEndRef.current) {
-                messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
-              }
-            }, 100);
-          }
-          
-          // Move conversation to top
-          const [updated] = updatedConversations.splice(existingConversationIndex, 1);
-          return [updated, ...updatedConversations];
-        } else {
-          // Create new conversation
-          const newConversation = {
-            friendId: partnerId,
-            name: 'Loading...',
-            avatar: '',
-            messages: [{
-              _id: message._id,
-              text: message.text,
-              sender: isSentByMe ? 'me' : partnerId,
-              timestamp: message.timestamp,
-              read: message.read || false
-            }],
-            lastMessage: message.text,
-            lastMessageTime: message.timestamp
-          };
-          
-          // Fetch user info
-          axios.get(`${process.env.REACT_APP_BACKEND_URL || 'http://localhost:5002'}/api/user/profile/${partnerId}`, {
-            headers: { Authorization: `Bearer ${token}` }
-          })
-            .then(response => {
-              const userData = response.data;
-              setConversations(prev => 
-                prev.map(convo => 
-                  convo.friendId === partnerId 
-                    ? {
-                        ...convo,
-                        name: userData.username || 'Unknown',
-                        avatar: userData.profileImage || ''
-                      }
-                    : convo
-                )
-              );
-            })
-            .catch(error => {
-              console.error('Error fetching user data:', error);
-            });
-          
-          // If not sent by me, increment unread count
-          if (!isSentByMe) {
-            setUnreadMessages(prev => ({
-              ...prev,
-              [partnerId]: (prev[partnerId] || 0) + 1
-            }));
-          }
-          
-          return [newConversation, ...prevConversations];
-        }
-      });
-    });
-
-    // Handle message sent confirmation
-    newSocket.on('messageSent', (message) => {
-      console.log('Message sent confirmation received:', message);
-      
-      // Convert the ISO timestamp string back to a Date object if needed
-      if (typeof message.timestamp === 'string') {
-        message.timestamp = new Date(message.timestamp);
-      }
-      
-      setConversations(prev => {
-        return prev.map(convo => {
-          if (convo.friendId === message.recipient) {
-            // Find and update the temporary message
-            const updatedMessages = convo.messages.map(msg => {
-              // Add null/undefined check for msg._id
-              if (msg._id && (
-                  msg._id === `temp-${message.timestamp instanceof Date ? message.timestamp.getTime() : Date.now()}` || 
-                  (msg._id.startsWith && msg._id.startsWith('temp-') && msg.text === message.text))
-              ) {
-                return { ...msg, _id: message._id || msg._id, sending: false };
-              }
-              return msg;
-            });
-            
-            return { ...convo, messages: updatedMessages };
-          }
-          return convo;
-        });
-      });
-    });
-
-    // Handle online users
-    newSocket.on('onlineUsers', ({ users }) => {
-      console.log('Online users:', users);
-      setOnlineUsers(users);
-    });
-
-    // Handle user status updates
-    newSocket.on('userStatus', ({ userId, status }) => {
-      console.log(`User ${userId} is now ${status}`);
-      if (status === 'online') {
-        setOnlineUsers(prev => Array.from(new Set([...prev, userId])));
-      } else {
-        setOnlineUsers(prev => prev.filter(id => id !== userId));
-      }
-    });
-
-    // Handle typing indicators
-    newSocket.on('userTyping', ({ userId }) => {
-      setTypingUsers(prev => ({ ...prev, [userId]: true }));
-    });
-
-    newSocket.on('userStopTyping', ({ userId }) => {
-      setTypingUsers(prev => ({ ...prev, [userId]: false }));
-    });
-
-    // Handle read receipts
-    newSocket.on('messageRead', ({ messageId }) => {
-      console.log('Message read:', messageId);
-      // Update UI for read receipt
-      setConversations(prev => {
-        return prev.map(conv => {
-          const updatedMessages = conv.messages.map(msg => {
-            if (msg.id === messageId) {
-              return { ...msg, read: true };
-            }
-            return msg;
-          });
-          return { ...conv, messages: updatedMessages };
-        });
-      });
-    });
-
-    // Handle errors
-    newSocket.on('error', ({ message }) => {
-      console.error('Socket error:', message);
-    });
-
-    // Cleanup
-    return () => {
-      if (socketRef.current) {
-        socketRef.current.disconnect();
-      }
-    };
-  }, [token, userProfile, activeConversation]);
+  };
 
   // Function to update conversations with new message
   const updateConversationWithMessage = useCallback((message) => {
@@ -349,8 +219,8 @@ const Dashboard = () => {
     const isActiveConversation = activeConversation?.friendId === partnerId;
 
     // Mark message as read if it's in active conversation and has a real ID
-    if (isActiveConversation && !isSentByMe && socket && message._id && !message._id.startsWith('temp-')) {
-      socket.emit('markAsRead', { messageId: message._id });
+    if (isActiveConversation && !isSentByMe && socketRef.current && message._id && !message._id.startsWith('temp-')) {
+      socketRef.current.emit('markAsRead', { messageId: message._id });
       
       // Clear unread count for this conversation
       setUnreadMessages(prev => ({ ...prev, [partnerId]: 0 }));
@@ -424,7 +294,7 @@ const Dashboard = () => {
         };
         
         // Fetch user info in the background
-        axios.get(`${process.env.REACT_APP_BACKEND_URL || 'http://localhost:5002'}/api/user/profile/${partnerId}`, {
+        axios.get(`${window.process.env.REACT_APP_BACKEND_URL || 'http://localhost:5002'}/api/user/profile/${partnerId}`, {
           headers: { Authorization: `Bearer ${token}` }
         })
           .then(response => {
@@ -455,1778 +325,1848 @@ const Dashboard = () => {
         return [...prevConversations, newConversation];
       }
     });
-  }, [userProfile, activeConversation, socket]);
+  }, [userProfile, activeConversation, token]);
 
-  // Handle sending messages
-  const handleSendMessage = useCallback(() => {
-    if (!activeConversation || !currentMessage.trim() || !socket) {
-      console.error('Cannot send message:', { 
-        hasActiveConversation: !!activeConversation, 
-        messageContent: currentMessage, 
-        hasSocket: !!socket 
-      });
+  // First check if token exists
+  useEffect(() => {
+    if (!token) {
+      console.error("No token found, redirecting to login");
+      navigate('/login', { replace: true });
+    } else {
+      setInitialized(true);
+    }
+  }, [token, navigate]);
+
+  // Effect to scroll to bottom when messages change
+  useEffect(() => {
+    // Only scroll to bottom if there are messages and the activeConversation has changed
+    const hasMessages = activeConversation && 
+      activeConversation.messages &&
+      activeConversation.messages.length > 0;
+      
+    if (hasMessages && messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [activeConversation]); // Now using activeConversation as the dependency
+
+  // Validate token on component mount
+  useEffect(() => {
+    console.log("Dashboard useEffect running");
+    
+    // Skip if no token
+    if (!token) return;
+    
+    // Check token format (only if it's a string with Bearer prefix)
+    if (typeof token === 'string' && token.startsWith('Bearer ')) {
+      // Remove 'Bearer ' prefix
+    const cleanToken = token.replace('Bearer ', '');
+    
+    // Set up axios default headers
+    axios.defaults.headers.common['Authorization'] = `Bearer ${cleanToken}`;
+    } else {
+      // Just use the token as is
+      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+    }
+    
+    // Don't do token validation here - the backend will handle it
+    
+    // Call the fetchData function to load user data
+    fetchData();
+    
+    // Clean up function
+    return () => {
+      // Clear any timeouts or subscriptions if needed
+    };
+  }, [navigate, token, handleApiError]); // Added token dependency
+
+  // Separate useEffect for socket connection
+  useEffect(() => {
+    // Only set up socket if we have a token and a user profile
+    if (!token || !userProfile) {
+      return;
+    }
+
+    console.log('Setting up Socket.io connection');
+    
+    // Don't create a new socket if we already have one
+    if (socketRef.current) {
+      console.log('Socket already exists, not creating a new one');
       return;
     }
     
-    const messageText = currentMessage.trim();
-    
-    // Create message object
-    const messageData = {
-      recipientId: activeConversation.friendId,
-      text: messageText
-    };
-    
-    // Create optimistic message for UI
-    const optimisticMessage = {
-      id: `temp-${Date.now()}`,
-      sender: 'me',
-      text: messageText,
-      timestamp: new Date().toISOString(),
-      pending: true
-    };
-    
-    // Update UI immediately
-    setActiveConversation(prev => ({
-      ...prev,
-      messages: [...prev.messages, optimisticMessage]
-    }));
-    
-    // Update conversations list
-    setConversations(prevConversations => {
-      const convIndex = prevConversations.findIndex(c => 
-        c.friendId === activeConversation.friendId
-      );
-      
-      if (convIndex === -1) return prevConversations;
-      
-      const updatedConversations = [...prevConversations];
-      const updatedConv = {
-        ...updatedConversations[convIndex],
-        messages: [...updatedConversations[convIndex].messages, optimisticMessage]
-      };
-      
-      updatedConversations[convIndex] = updatedConv;
-      
-      // Move to top
-      const [movedConv] = updatedConversations.splice(convIndex, 1);
-      return [movedConv, ...updatedConversations];
+    // Create socket connection
+    const newSocket = io(window.process.env.REACT_APP_SOCKET_URL || 'http://localhost:5002', {
+      auth: { token },
+      query: { token },
+      transports: ['websocket', 'polling'],
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000
     });
     
-    // Clear input
-    setCurrentMessage('');
+    // Connection events
+    newSocket.on('connect', () => {
+      console.log('Socket.io Connected');
+      setSocket(newSocket);
+      socketRef.current = newSocket;
+    });
+    
+    newSocket.on('connect_error', (error) => {
+      console.error('Socket.io Connection Error:', error.message);
+      // Don't set socket to null here to allow reconnection attempts
+    });
+    
+    newSocket.on('disconnect', (reason) => {
+      console.log('Socket.io Disconnected', reason);
+      // We don't set socket to null here to allow for reconnections
+    });
+    
+    newSocket.on('reconnect', (attemptNumber) => {
+      console.log(`Socket.io Reconnected after ${attemptNumber} attempts`);
+    });
+    
+    newSocket.on('reconnect_error', (err) => {
+      console.error('Socket.io Reconnection Error:', err.message);
+    });
+    
+    newSocket.on('reconnect_failed', () => {
+      console.error('Socket.io Reconnection Failed');
+      setSocket(null);
+      socketRef.current = null;
+    });
+    
+    // Message handling
+    newSocket.on('newMessage', (message) => {
+      console.log('New message received:', message);
+      updateConversationWithMessage(message);
+    });
+    
+    newSocket.on('messageSent', (message) => {
+      console.log('Message sent confirmation:', message);
+      updateConversationWithMessage(message);
+    });
+    
+    // Handle online users
+    newSocket.on('onlineUsers', ({ users }) => {
+      console.log('Online users:', users);
+      setOnlineUsers(users);
+    });
+
+    // Handle user status updates
+    newSocket.on('userStatus', ({ userId, status }) => {
+      console.log(`User ${userId} is now ${status}`);
+      if (status === 'online') {
+        setOnlineUsers(prev => Array.from(new Set([...prev, userId])));
+      } else {
+        setOnlineUsers(prev => prev.filter(id => id !== userId));
+      }
+    });
+
+    // Handle typing indicators
+    newSocket.on('userTyping', ({ userId }) => {
+      setTypingUsers(prev => ({ ...prev, [userId]: true }));
+    });
+
+    newSocket.on('userStopTyping', ({ userId }) => {
+      setTypingUsers(prev => ({ ...prev, [userId]: false }));
+    });
+
+    // Handle read receipts
+    newSocket.on('messageRead', ({ messageId }) => {
+      console.log('Message read:', messageId);
+      // Update UI for read receipt
+      setConversations(prev => {
+        return prev.map(conv => {
+          const updatedMessages = conv.messages.map(msg => {
+            if (msg.id === messageId) {
+              return { ...msg, read: true };
+            }
+            return msg;
+          });
+          return { ...conv, messages: updatedMessages };
+        });
+      });
+    });
+
+    // Handle errors
+    newSocket.on('error', ({ message }) => {
+      console.error('Socket error:', message);
+    });
+
+    // Clean up function
+    return () => {
+      console.log('Cleaning up Socket.io connection');
+      if (newSocket) {
+        newSocket.disconnect();
+      }
+      setSocket(null);
+      socketRef.current = null;
+    };
+  }, [token, userProfile, updateConversationWithMessage]);
+
+  // Handle sending messages
+  const handleSendMessage = useCallback((text) => {
+    if (!activeConversation || !text.trim()) return;
+    
+    const friendId = activeConversation.friendId;
+    
+    // Create a temporary message
+    const tempMessage = {
+      id: `temp-${Date.now()}`,
+      sender: 'me',
+      text,
+      timestamp: new Date().toISOString(),
+      read: false
+    };
+    
+    // Add to conversation
+    setConversations(prev => {
+      const updated = prev.map(conv => {
+        if (conv.id === activeConversation.id) {
+          return {
+            ...conv,
+            messages: [...conv.messages, tempMessage]
+          };
+        }
+        return conv;
+      });
+      return updated;
+    });
+    
+    // Update active conversation
+    setActiveConversation(prev => ({
+      ...prev,
+      messages: [...prev.messages, tempMessage]
+    }));
     
     // Scroll to bottom
-    setTimeout(scrollToBottom, 50);
-    
-    // Stop typing indicator
-    socket.emit('stopTyping', { recipientId: activeConversation.friendId });
-    
-    // Actually send via socket.io
-    socket.emit('sendMessage', messageData);
-  }, [activeConversation, currentMessage, socket, scrollToBottom]);
-
-  // Handle input change with typing indicator
-  const handleInputChange = useCallback((e) => {
-    setCurrentMessage(e.target.value);
-    
-    if (socket && activeConversation) {
-      // Send typing indicator
-      socket.emit('typing', { recipientId: activeConversation.friendId });
-      
-      // Clear existing timeout
-      if (typingTimeoutRef.current) {
-        clearTimeout(typingTimeoutRef.current);
+    setTimeout(() => {
+      if (chatWindowRef.current) {
+        chatWindowRef.current.scrollTop = chatWindowRef.current.scrollHeight;
       }
-      
-      // Set timeout to stop typing indicator
-      typingTimeoutRef.current = setTimeout(() => {
-        socket.emit('stopTyping', { recipientId: activeConversation.friendId });
-      }, 2000);
+    }, 100);
+    
+    // Send to API
+    axios.post(`${window.process.env.REACT_APP_BACKEND_URL || 'http://localhost:5002'}/api/user/send-message`, 
+      { recipientId: friendId, message: text },
+      { headers: { Authorization: `Bearer ${token}` } }
+    ).catch(error => {
+      console.error('Error sending message:', error);
+      // Handle error - could remove temp message or mark as failed
+    });
+  }, [activeConversation, token]);
+
+  // Initialize profile form with user data
+  const initializeProfileForm = useCallback(() => {
+    if (userProfile) {
+      setProfileUsername(userProfile.username || '');
+      setProfileFullName(userProfile.profile?.fullName || '');
+      setProfileBio(userProfile.profile?.bio || '');
+      setProfileInterests(userProfile.profile?.interests ? userProfile.profile.interests.join(', ') : '');
+      setProfileGender(userProfile.profile?.gender || '');
+      setProfileAge(userProfile.profile?.age || '');
+      setProfilePhone(userProfile.phoneNumber || '');
+      setProfileLocation(userProfile.profile?.location || userProfile.preferences?.location || '');
     }
-  }, [socket, activeConversation]);
+  }, [userProfile]);
 
-  // Start chat with a friend
-  const handleChat = useCallback((friend) => {
-    // Check if conversation already exists
-    const existingConversation = conversations.find(conv => conv.friendId === friend._id);
-    
-    if (existingConversation) {
-      setActiveConversation(existingConversation);
-      
-      // Mark messages as read
-      if (socket) {
-        existingConversation.messages.forEach(msg => {
-          if (msg.sender !== 'me' && !msg.read && msg._id && !msg._id.startsWith('temp-')) {
-            socket.emit('markAsRead', { messageId: msg._id });
-          }
-        });
-      }
-      
-      // Clear unread count
-      setUnreadMessages(prev => ({ ...prev, [friend._id]: 0 }));
-    } else {
-      // Fetch conversation history
-      axios.get(`http://localhost:5002/api/user/messages/${friend._id}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      })
-      .then(response => {
-        // Transform messages
-        const messages = response.data?.messages?.map(msg => ({
-          id: msg._id || Date.now().toString(),
-          sender: msg.sender === userProfile?._id ? 'me' : msg.sender,
-          text: msg.text,
-          timestamp: msg.timestamp,
-          read: msg.read || false
-        })) || [];
-        
-        // Create new conversation
-        const newConversation = {
-          id: Date.now().toString(),
-          friendId: friend._id,
-          friendName: friend.profile?.fullName || friend.username,
-          friendPhoto: friend.profile?.photoUrl || null,
-          messages: messages
-        };
-        
-        setConversations(prev => [newConversation, ...prev]);
-        setActiveConversation(newConversation);
-        
-        // Mark messages as read
-        if (socket) {
-          messages.forEach(msg => {
-            if (msg.sender !== 'me' && !msg.read && msg._id && !msg._id.startsWith('temp-')) {
-              socket.emit('markAsRead', { messageId: msg._id });
-            }
-          });
-        }
-        
-        // Clear unread count
-        setUnreadMessages(prev => ({ ...prev, [friend._id]: 0 }));
-      })
-      .catch(error => {
-        console.error('Error fetching messages:', error);
-        
-        // Create empty conversation
-        const newConversation = {
-          id: Date.now().toString(),
-          friendId: friend._id,
-          friendName: friend.profile?.fullName || friend.username,
-          friendPhoto: friend.profile?.photoUrl || null,
-          messages: []
-        };
-        
-        setConversations(prev => [newConversation, ...prev]);
-        setActiveConversation(newConversation);
-      });
-    }
-    
-    // Join room for this conversation
-    if (socket) {
-      const roomId = [userProfile._id, friend._id].sort().join('_');
-      socket.emit('joinRoom', roomId);
-    }
-    
-    // Switch to chats tab
-    setActiveTab('chats');
-  }, [conversations, userProfile?._id, socket, token]);
-
-  const fetchData = async () => {
-    try {
-      const token = localStorage.getItem('token');
-      if (!token) {
-        navigate('/login');
-        return;
-      }
-
-      // Fetch profile
-      const profileResponse = await axios.get('http://localhost:5002/api/user/profile', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      
-      setUserProfile(profileResponse.data);
-      setFriendRequests(profileResponse.data.friendRequests || []);
-      
-      // Check if profile is incomplete
-      const isProfileIncomplete = !profileResponse.data.profileCompleted;
-      setProfileIncomplete(isProfileIncomplete);
-      
-      // If profile is incomplete, set active tab to profile
-      if (isProfileIncomplete) {
-        setActiveTab('profile');
-      }
-
-      try {
-        // Try to fetch matches (might fail if profile/preferences incomplete)
-        const matchesResponse = await axios.get('http://localhost:5002/api/user/matches', {
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        console.log('Matches response format:', matchesResponse.data);
-        
-        if (matchesResponse.data && matchesResponse.data.matches) {
-          // Add explicit debugging for match objects
-          if (matchesResponse.data.matches.length > 0) {
-            console.log('First match example:', {
-              id: matchesResponse.data.matches[0]._id,
-              name: matchesResponse.data.matches[0].profile?.fullName || matchesResponse.data.matches[0].username,
-              matchPercentage: matchesResponse.data.matches[0].matchPercentage,
-              photoUrl: matchesResponse.data.matches[0].profile?.photoUrl,
-              location: matchesResponse.data.matches[0].preferences?.location,
-              isLocationMatch: matchesResponse.data.matches[0].isLocationMatch
-            });
-          }
-          
-          // Log location match statistics
-          const locationMatches = matchesResponse.data.matches.filter(match => match.isLocationMatch);
-          console.log(`Total matches: ${matchesResponse.data.matches.length}, Location matches: ${locationMatches.length}`);
-          
-          if (matchesResponse.data.locationMatchCount !== undefined) {
-            console.log(`Location match count from API: ${matchesResponse.data.locationMatchCount}`);
-          }
-          
-          setMatches(matchesResponse.data.matches);
-        } else {
-          console.log('No matches found in response');
-          setMatches([]);
-        }
-      } catch (matchError) {
-        console.error('Error fetching matches:', matchError);
-        setMatches([]);
-      }
-
-      try {
-        // Try to fetch friends (should work even with incomplete profile)
-        const friendsResponse = await axios.get('http://localhost:5002/api/user/friends', {
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        setFriends(friendsResponse.data.friends || []);
-      } catch (friendsError) {
-        console.log('Error loading friends data');
-        setFriends([]);
-      }
-      
-      // Load all existing conversations for this user
-      try {
-        const conversationsResponse = await axios.get('http://localhost:5002/api/user/conversations', {
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        
-        if (conversationsResponse.data && conversationsResponse.data.conversations) {
-          // Process and set up conversations
-          const processedConversations = await Promise.all(
-            conversationsResponse.data.conversations.map(async (conv) => {
-              // For each conversation, fetch the friend's details
-              try {
-                const friendResponse = await axios.get(`http://localhost:5002/api/user/profile/${conv.partnerId}`, {
-                  headers: { Authorization: `Bearer ${token}` }
-                });
-                
-                const friend = friendResponse.data;
-                
-                return {
-                  id: conv.id || Date.now().toString(),
-                  friendId: conv.partnerId,
-                  friendName: friend.profile?.fullName || friend.username,
-                  friendPhoto: friend.profile?.photoUrl,
-                  messages: conv.messages.map(msg => ({
-                    id: msg._id || Date.now().toString(),
-                    sender: msg.sender === profileResponse.data._id ? 'me' : msg.sender,
-                    text: msg.text,
-                    timestamp: msg.timestamp
-                  }))
-                };
-              } catch (error) {
-                console.error('Error fetching conversation partner details:', error);
-                return {
-                  id: conv.id || Date.now().toString(),
-                  friendId: conv.partnerId,
-                  friendName: 'User',
-                  friendPhoto: null,
-                  messages: conv.messages.map(msg => ({
-                    id: msg._id || Date.now().toString(),
-                    sender: msg.sender === profileResponse.data._id ? 'me' : msg.sender,
-                    text: msg.text,
-                    timestamp: msg.timestamp
-                  }))
-                };
-              }
-            })
-          );
-          
-          setConversations(processedConversations);
-        }
-      } catch (convError) {
-        console.error('Error loading conversations:', convError);
-      }
-      
-      setLoading(false);
-    } catch (err) {
-      console.error('Error loading profile data:', err);
-      if (err.response && err.response.status === 401) {
-        // Unauthorized - token expired
-        localStorage.removeItem('token');
-        navigate('/login');
-      } else {
-        setError('Failed to load data. Please try again.');
-        setLoading(false);
-      }
+  // Handle photo upload for profile
+  const handlePhotoChange = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      setPhotoFile(file);
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setPhotoPreview(reader.result);
+      };
+      reader.readAsDataURL(file);
     }
   };
 
+  // Effect to initialize the profile form fields when userProfile changes
   useEffect(() => {
-    fetchData();
-    // If redirecting from profile with state, set active tab to preferences
-    if (location.state?.redirectToPreferences) {
-      setActiveTab('preferences');
+    if (userProfile) {
+      initializeProfileForm();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Intentionally leaving dependency array empty to avoid infinite loop
+  }, [userProfile, initializeProfileForm]);
 
-  // Add this function to handle API errors
-  const handleApiError = (error, functionName) => {
-    console.error(`Error in ${functionName}:`, error);
-    
-    // Check if error is related to verification requirement
-    if (error.response && error.response.data && error.response.data.requireVerification) {
-      alert(error.response.data.message || 'Email verification required for this action');
-      
-      // Redirect to verification page
-      navigate('/verify-email');
-      return true;
-    }
-    
-    return false;
-  };
+  // NOW after all hooks are defined, we can have conditional returns
 
-  // Update the handleSendFriendRequest function
-  const handleSendFriendRequest = useCallback(async (userId) => {
-    try {
-      setLoading(true);
-      console.log("Sending friend request to:", userId);
-      
-      const response = await axios.post(
-        `http://localhost:5002/api/user/friend-request`,
-        { recipientId: userId }, // Use recipientId instead of userId
-        {
-          headers: { Authorization: `Bearer ${token}` }
-        }
-      );
-      
-      alert("Friend request sent successfully!");
-      
-      setSentRequests(prev => ({
-        ...prev,
-        [userId]: true
-      }));
-      
-      setTimeout(() => setSentRequests(prev => ({ ...prev, [userId]: false })), 3000);
-      return response.data;
-    } catch (error) {
-      if (handleApiError(error, 'handleSendFriendRequest')) {
-        return;
-      }
-      
-      console.error('Error sending friend request:', error);
-      
-      // If the error is that we already sent a request, mark it as sent
-      if (error.response && error.response.status === 400 && 
-          error.response.data.message === 'Friend request already sent') {
-        setSentRequests(prev => ({
-          ...prev,
-          [userId]: true
-        }));
-      }
-      
-      // Display the specific error message from the backend if available
-      if (error.response && error.response.data && error.response.data.message) {
-        alert(`Failed to send friend request: ${error.response.data.message}`);
-      } else {
-        alert('Failed to send friend request');
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, [token, handleApiError]);
+  // If no token, show nothing while redirecting
+  if (!token) {
+    return (
+      <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+        <div className="bg-white p-8 rounded-lg shadow-md w-full max-w-md text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-t-4 border-b-4 border-blue-500 mx-auto mb-4"></div>
+          <h2 className="text-xl font-semibold text-gray-700 mb-2">Redirecting...</h2>
+          <p className="text-gray-500">Please wait while we redirect you to login</p>
+        </div>
+      </div>
+    );
+  }
 
-  // Update the handleFriendRequestResponse function
+  // If loading, show loading indicator
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+        <div className="bg-white p-8 rounded-lg shadow-md w-full max-w-md text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-t-4 border-b-4 border-blue-500 mx-auto mb-4"></div>
+          <h2 className="text-xl font-semibold text-gray-700 mb-2">Loading Dashboard</h2>
+          <p className="text-gray-500">Please wait while we load your profile...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // If error, show error message
+  if (error) {
+    return (
+      <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+        <div className="bg-white p-8 rounded-lg shadow-md w-full max-w-md text-center">
+          <div className="bg-red-100 p-3 rounded-full inline-block mb-4">
+            <svg className="w-8 h-8 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+            </svg>
+          </div>
+          <h2 className="text-xl font-semibold text-gray-700 mb-2">Something went wrong</h2>
+          <p className="text-gray-500 mb-4">{error}</p>
+          <button 
+            onClick={() => window.location.reload()}
+            className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // If no user profile but initialized and not loading, show error
+  if (!userProfile) {
+    return (
+      <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+        <div className="bg-white p-8 rounded-lg shadow-md w-full max-w-md text-center">
+          <div className="bg-yellow-100 p-3 rounded-full inline-block mb-4">
+            <svg className="w-8 h-8 text-yellow-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+            </svg>
+          </div>
+          <h2 className="text-xl font-semibold text-gray-700 mb-2">Profile Not Found</h2>
+          <p className="text-gray-500 mb-4">We couldn't load your profile information.</p>
+          <button 
+            onClick={() => window.location.reload()}
+            className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 mr-2"
+          >
+            Refresh
+          </button>
+          <button 
+            onClick={() => {
+          localStorage.removeItem('token');
+              navigate('/login', { replace: true });
+            }}
+            className="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600"
+          >
+            Logout
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Rest of the component handlers and functions
   const handleFriendRequestResponse = async (requestId, action) => {
     try {
-      const token = localStorage.getItem('token');
-      await axios.post('http://localhost:5002/api/user/friend-request-response',
+      setLoading(true);
+      const response = await axios.post(
+        `${window.process.env.REACT_APP_BACKEND_URL || 'http://localhost:5002'}/api/user/respond-friend-request`,
         { requestId, action },
         { headers: { Authorization: `Bearer ${token}` } }
       );
       
-      // If accepting the request, start a chat and switch to chat tab
-      if (action === 'accept') {
-        // Refresh data first to get updated friends list
-        await fetchData();
+      if (response.data.success) {
+        // Filter out the processed request
+        const updatedRequests = friendRequests.filter(request => request._id !== requestId);
+        setFriendRequests(updatedRequests);
         
-        // Find the friend from the request
-        const request = userProfile.friendRequests.find(req => req._id === requestId);
-        if (request) {
-          const friendId = request.from;
-          // Find the friend in the friends list
-          const friend = friends.find(f => f._id.toString() === friendId.toString());
-          if (friend) {
-            // Start a chat with this friend
-            handleChat(friend);
-            // Switch to chats tab
-            setActiveTab('chats');
+        if (action === 'accept') {
+          // If accepted, add to friends list
+          const newFriend = response.data.friend;
+          setFriends(prevFriends => [...prevFriends, newFriend]);
+          
+          alert('Friend request accepted!');
+          
+          // Start a chat with the new friend
+          if (newFriend) {
+            handleChat(newFriend._id, newFriend.username);
           }
+      } else {
+          alert('Friend request declined.');
         }
       } else {
-        // If rejecting, just refresh data
-        fetchData();
+        alert(response.data.message || 'Failed to process friend request.');
       }
     } catch (error) {
-      if (handleApiError(error, 'handleFriendRequestResponse')) {
-        return;
-      }
-      
       console.error('Error responding to friend request:', error);
-      alert('Failed to process friend request');
+      alert('Failed to process friend request. Please try again.');
+    } finally {
+      setLoading(false);
     }
   };
 
   const handleLogout = () => {
-    // Close WebSocket connection if open
-    if (socket) {
-      console.log('Closing Socket.io connection before logout');
-      socket.disconnect();
-      setSocket(null);
-    }
-    
-    // Clear all saved data
     localStorage.removeItem('token');
-    setUserProfile(null);
-    setConversations([]);
-    setActiveConversation(null);
-    
+    localStorage.removeItem('user');
     navigate('/login');
   };
 
-  // Update the handleViewProfile function
-  const handleViewProfile = useCallback((user) => {
+  // Handle viewing a user's profile
+  const handleViewProfile = (user) => {
+    if (!user || !user._id) return;
+    
     setViewingProfile(user);
-  }, []);
-
-  // Add function to close profile modal
-  const closeProfileModal = () => {
-    setViewingProfile(null);
+    // You could navigate to a profile view page or show a modal
+    // For now we'll just show a simple alert
+    alert(`Viewing profile for ${user.username || 'Unknown User'}`);
+    
+    // In a real implementation, you might do:
+    // navigate(`/user/${user._id}`);
+    // or
+    // setShowProfileModal(true);
   };
 
-  // Update the handleUnfriend function
-  const handleUnfriend = async (friendId) => {
+  // Handle sending a friend request
+  const handleSendFriendRequest = async (userId) => {
     try {
-      const token = localStorage.getItem('token');
-      await axios.post('http://localhost:5002/api/user/unfriend', 
-        { friendId },
-        { headers: { Authorization: `Bearer ${token}` } }
+      // Check if a friend request has already been sent
+      const alreadySent = friendRequests.some(
+        request => request.sender._id === userProfile._id && request.recipient._id === userId
       );
-      fetchData(); // Refresh the data
-      alert('Friend removed successfully');
-    } catch (error) {
-      if (handleApiError(error, 'handleUnfriend')) {
+      
+      if (alreadySent) {
+        alert('You have already sent a friend request to this user.');
         return;
       }
       
-      console.error('Error removing friend:', error);
-      alert('Failed to remove friend');
+      setLoading(true);
+      const response = await axios.post(
+        `${window.process.env.REACT_APP_BACKEND_URL || 'http://localhost:5002'}/api/user/send-friend-request`,
+        { recipientId: userId },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      
+      if (response.data.success) {
+        alert('Friend request sent successfully!');
+        // Update the friend requests list
+        const updatedFriendRequests = [...friendRequests, response.data.friendRequest];
+        setFriendRequests(updatedFriendRequests);
+      } else {
+        alert(response.data.message || 'Failed to send friend request.');
+      }
+    } catch (error) {
+      console.error('Error sending friend request:', error);
+      alert('Failed to send friend request. Please try again.');
+    } finally {
+      setLoading(false);
     }
   };
 
-  // Render the Chats tab
-  const renderChatsTab = () => {
+  // Render content based on active tab
+  const renderContent = () => {
+    if (loading) {
   return (
-      <div className="flex h-[calc(100vh-150px)]">
-        {/* Conversation list */}
-        <div className="w-1/4 bg-white rounded-lg shadow mr-4 overflow-y-auto">
-          <h3 className="text-lg font-semibold p-4 border-b">Your Conversations</h3>
-          {conversations.length === 0 ? (
-            <div className="p-4 text-gray-500">
-              No conversations yet. Start chatting with your matches!
+        <div className="flex items-center justify-center p-8">
+          <div className="text-center">
+            <div className="animate-spin rounded-full h-12 w-12 border-t-4 border-b-4 border-blue-500 mx-auto mb-4"></div>
+            <h2 className="text-xl font-semibold text-gray-700 mb-2">Loading Dashboard</h2>
+            <p className="text-gray-500">Please wait while we load your profile...</p>
             </div>
-          ) : (
-            <ul>
-              {conversations.map(conversation => (
-                <li 
-                  key={conversation.id}
-                  onClick={() => {
-                    setActiveConversation(conversation);
-                    // Mark as read
-                    if (socket && unreadMessages[conversation.friendId]) {
-                      conversation.messages.forEach(msg => {
-                        if (msg.sender !== 'me' && !msg.read && msg._id && !msg._id.startsWith('temp-')) {
-                          socket.emit('markAsRead', { messageId: msg._id });
-                        }
-                      });
-                      
-                      // Clear unread count
-                      setUnreadMessages(prev => ({ ...prev, [conversation.friendId]: 0 }));
-                    }
-                  }}
-                  className={`p-4 border-b cursor-pointer hover:bg-gray-50 ${
-                    activeConversation && activeConversation.id === conversation.id
-                    ? 'bg-blue-50 border-l-4 border-l-blue-500'
-                    : ''
-                  }`}
-                >
-                  <div className="flex items-center">
-                    <div className="relative">
-                      <div className="w-10 h-10 rounded-full bg-gray-300 overflow-hidden mr-3">
-                        {conversation.friendPhoto ? (
-                          <img 
-                            src={conversation.friendPhoto.startsWith('http') 
-                              ? conversation.friendPhoto 
-                              : `http://localhost:5002${conversation.friendPhoto}`} 
-                            alt={conversation.friendName} 
-                            className="w-full h-full object-cover"
-                          />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center">
-                            <span className="text-xl">👤</span>
-                          </div>
-                        )}
-                      </div>
-                      
-                      {/* Online indicator */}
-                      {onlineUsers.includes(conversation.friendId) && (
-                        <div className="absolute bottom-0 right-1 w-3 h-3 bg-green-500 rounded-full border-2 border-white"></div>
-                      )}
+        </div>
+      );
+    }
+
+    if (error) {
+      return (
+        <div className="flex items-center justify-center p-8">
+          <div className="text-center">
+            <div className="bg-red-100 p-3 rounded-full inline-block mb-4">
+              <svg className="w-8 h-8 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+              </svg>
+            </div>
+            <h2 className="text-xl font-semibold text-gray-700 mb-2">Something went wrong</h2>
+            <p className="text-gray-500 mb-4">{error}</p>
+            <button 
+              onClick={() => window.location.reload()}
+              className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    switch (activeTab) {
+      case 'dashboard':
+  return (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {matches && matches.length > 0 ? (
+              matches.map((match) => (
+                <div key={match._id} className="bg-white rounded-xl shadow-md overflow-hidden border border-blue-100 hover:shadow-lg transition-shadow">
+                  <div className="flex">
+                    <div className="w-1/3 bg-blue-600 text-white flex items-center justify-center">
+                      <div className="text-center">
+                        <div className="text-6xl font-bold">E</div>
+            </div>
                     </div>
-                    
-                    <div className="flex-1">
-                      <div className="flex justify-between items-center">
-                        <div className="font-semibold">{conversation.friendName}</div>
+                    <div className="w-2/3 p-4">
+                      <h3 className="text-xl font-semibold">{match.username}</h3>
+                      <p className="text-gray-500 flex items-center text-sm">
+                        <span className="material-icons-outlined text-sm mr-1 text-blue-400">location_on</span>
+                        Greater Noida, Uttar Pradesh, India
+                      </p>
+
+                      <div className="mt-3">
+                        <div className="flex justify-between">
+                          <div>
+                            <p className="text-gray-600 text-sm">Rent</p>
+                            <p className="font-semibold">₹ {match.preferences?.minBudget || 8000}</p>
+                          </div>
+                          <div>
+                            <p className="text-gray-600 text-sm">Looking for</p>
+                            <p className="font-semibold">Any</p>
+                          </div>
+                          <div>
+                            <p className="text-gray-600 text-sm">Preference</p>
+                            <p className="font-semibold">Roommate</p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="bg-blue-50 px-4 py-2 flex justify-between items-center border-t border-blue-100">
+                  <div className="flex items-center">
+                      <span className="flex items-center text-sm">
+                        <span className="mr-1">0 km</span> from your search
+                      </span>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <div className="flex items-center">
+                        <span className="material-icons-outlined text-blue-500 mr-1">favorite</span>
+                        <span>{match.matchPercentage || 50}% Match</span>
+                      </div>
+                      <button 
+                        onClick={() => handleSendFriendRequest(match._id)}
+                        className="text-gray-500 hover:text-blue-600"
+                      >
+                        <span className="material-icons-outlined">chat</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="col-span-3 text-center py-12 bg-white rounded-lg shadow-sm">
+                <div className="text-5xl mb-4 text-blue-400">
+                  <span role="img" aria-label="Search">🔍</span>
+                </div>
+                <h3 className="text-xl font-semibold text-gray-700 mb-2">No matches found yet</h3>
+                <p className="text-gray-500 mb-6">Update your preferences to find potential roommates!</p>
+                <button
+                  onClick={() => setActiveTab('preferences')}
+                  className="px-6 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg shadow transition-colors"
+                >
+                  Update Preferences
+                </button>
+              </div>
+            )}
+          </div>
+        );
+      case 'matches':
+        return (
+          <div className="p-4">
+            <h2 className="text-2xl font-bold mb-4">Your Matches</h2>
+            <div className="bg-white p-4 rounded-lg shadow-lg">
+              {loading ? (
+                <div className="flex justify-center items-center p-12">
+                  <div className="animate-spin rounded-full h-12 w-12 border-t-4 border-b-4 border-blue-500"></div>
+                </div>
+              ) : matches && matches.length > 0 ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {matches.map(match => (
+                    <div key={match._id} className="border rounded-lg overflow-hidden shadow-md hover:shadow-lg transition-all duration-300 bg-gradient-to-b from-white to-blue-50">
+                    <div className="relative">
+                        <div className="h-32 bg-gradient-to-r from-blue-400 to-indigo-500"></div>
+                        <div className="absolute -bottom-10 left-1/2 transform -translate-x-1/2">
+                          <div className="h-20 w-20 rounded-full bg-white p-1 shadow-lg overflow-hidden">
+                            {match.profileImage ? (
+                              <img src={match.profileImage} alt={match.username} className="h-full w-full object-cover rounded-full" />
+                            ) : (
+                              <div className="h-full w-full flex items-center justify-center bg-gradient-to-r from-blue-300 to-indigo-300 text-white text-xl font-bold rounded-full">
+                                {match.username.charAt(0).toUpperCase()}
+                          </div>
+                        )}
+                          </div>
+                        </div>
+                      </div>
+                      
+                      <div className="pt-12 p-4 text-center">
+                        <h3 className="font-bold text-lg text-gray-800">{match.username}</h3>
+                        <div className="mt-1 mb-3">
+                          <span className="inline-block bg-gradient-to-r from-blue-500 to-indigo-500 text-white text-sm font-medium px-3 py-1 rounded-full">
+                            {match.matchPercentage || '90'}% match
+                          </span>
+                    </div>
+                        <p className="text-gray-600 text-sm mb-4 line-clamp-2">{match.bio || 'Looking for a compatible roommate.'}</p>
                         
-                        {/* Unread message count */}
-                        {unreadMessages[conversation.friendId] > 0 && (
-                          <div className="bg-blue-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs">
-                            {unreadMessages[conversation.friendId]}
+                        <div className="grid grid-cols-2 gap-2 mb-4">
+                          {match.preferences && Object.entries(match.preferences).slice(0, 4).map(([key, value]) => (
+                            <div key={key} className="text-xs bg-blue-50 p-1 rounded text-blue-700">
+                              <span className="font-medium">{key}: </span>{value}
+                            </div>
+                          ))}
+                        </div>
+                        
+                        <div className="flex space-x-2">
+                          <button
+                            onClick={() => handleViewProfile(match)}
+                            className="flex-1 px-3 py-2 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition-colors"
+                          >
+                            View Profile
+                          </button>
+                          <button
+                            onClick={() => {
+                              // Send friend request logic
+                              handleSendFriendRequest(match._id);
+                            }}
+                            className="flex-1 px-3 py-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors"
+                          >
+                            Connect
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-12">
+                  <div className="text-5xl mb-4">
+                    <span role="img" aria-label="Search">🔍</span>
+                  </div>
+                  <h3 className="text-xl font-semibold text-gray-700 mb-2">No matches found yet</h3>
+                  <p className="text-gray-500 mb-6">Update your preferences to find potential roommates!</p>
+                  <button
+                    onClick={() => setActiveTab('preferences')}
+                    className="px-6 py-3 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-lg shadow hover:shadow-lg transform hover:-translate-y-1 transition-all duration-200"
+                  >
+                    Update Preferences
+                  </button>
                           </div>
                         )}
                       </div>
-                      
-                      {/* Last message preview */}
-                      {conversation.messages.length > 0 && (
-                        <div className="text-gray-500 text-sm truncate">
-                          {conversation.messages[conversation.messages.length - 1].text}
+          </div>
+        );
+      case 'connections':
+        return (
+          <div className="p-4">
+            <h2 className="text-2xl font-bold mb-6">Your Connections</h2>
+            
+            {/* Friend Requests Section */}
+            {friendRequests && friendRequests.length > 0 && (
+              <div className="mb-8">
+                <h3 className="text-xl font-semibold mb-3 text-indigo-700">Friend Requests</h3>
+                <div className="bg-white p-5 rounded-xl shadow-lg mb-4">
+                  {friendRequests.map(request => (
+                    <div key={request._id} className="flex items-center justify-between border-b pb-4 mb-4 last:border-0 last:mb-0 last:pb-0 hover:bg-blue-50 p-3 rounded-lg transition-colors">
+                      <div className="flex items-center">
+                        <div className="h-14 w-14 rounded-full bg-gradient-to-r from-blue-200 to-indigo-200 mr-4 overflow-hidden shadow-md border-2 border-white">
+                          {request.fromUserData?.profileImage ? (
+                            <img src={request.fromUserData.profileImage} alt={request.fromUserData.username} className="h-full w-full object-cover" />
+                          ) : (
+                            <div className="h-full w-full flex items-center justify-center bg-gradient-to-r from-blue-300 to-indigo-300 text-white text-xl font-bold">
+                              {request.fromUserData?.username?.charAt(0).toUpperCase() || '?'}
                         </div>
                       )}
                     </div>
+                        <div>
+                          <h4 className="font-bold text-lg text-gray-800">{request.fromUserData?.username || 'Unknown User'}</h4>
+                          <p className="text-gray-600 text-sm">Wants to connect with you</p>
                   </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-        
-        {/* Chat window */}
-        {activeConversation ? (
-          <div className="flex-1 bg-white rounded-lg shadow flex flex-col">
-            {/* Chat header */}
-            <div className="p-4 border-b flex items-center justify-between">
-              <div className="flex items-center">
-                <div className="relative">
-                  <div className="w-10 h-10 rounded-full bg-gray-300 overflow-hidden mr-3">
-                    {activeConversation.friendPhoto ? (
-                      <img 
-                        src={activeConversation.friendPhoto.startsWith('http') 
-                          ? activeConversation.friendPhoto 
-                          : `http://localhost:5002${activeConversation.friendPhoto}`} 
-                        alt={activeConversation.friendName} 
-                        className="w-full h-full object-cover"
-                      />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center">
-                        <span className="text-xl">👤</span>
                       </div>
-                    )}
-                  </div>
-                  
-                  {/* Online indicator */}
-                  {onlineUsers.includes(activeConversation.friendId) && (
-                    <div className="absolute bottom-0 right-1 w-3 h-3 bg-green-500 rounded-full border-2 border-white"></div>
-                  )}
-                </div>
-    <div>
-                  <div className="font-semibold">{activeConversation.friendName}</div>
-                  <div className="text-xs text-gray-500">
-                    {onlineUsers.includes(activeConversation.friendId) 
-                      ? 'Online' 
-                      : 'Offline'}
-                  </div>
-                </div>
-              </div>
-              
-              {/* View profile button */}
-              <button 
-                onClick={() => {
-                  const friend = friends.find(f => f._id === activeConversation.friendId);
-                  if (friend) {
-                    setSelectedFriend(friend);
-                    setShowProfileModal(true);
-                  }
-                }}
-                className="text-blue-500 hover:text-blue-700"
-              >
-                View Profile
-              </button>
-            </div>
-            
-            {/* Messages */}
-            <div className="flex-1 p-4 overflow-y-auto bg-gray-50" ref={chatWindowRef}>
-              {activeConversation.messages.map((message, index) => (
-                <div 
-                  key={message.id || index} 
-                  className={`mb-4 flex ${message.sender === 'me' ? 'justify-end' : 'justify-start'}`}
-                >
-                  <div 
-                    className={`
-                      max-w-[70%] rounded-lg px-4 py-2 
-                      ${message.sender === 'me' 
-                        ? 'bg-blue-500 text-white' 
-                        : 'bg-gray-200 text-gray-800'}
-                    `}
-                  >
-                    <p className="break-words">{message.text}</p>
-                    <div className="flex justify-between items-center mt-1">
-                      <span className="text-xs text-gray-400">
-                        {new Date(message.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
-                      </span>
-                      
-                      {/* Read receipt for sent messages */}
-                      {message.sender === 'me' && (
-                        <span className="text-xs ml-2">
-                          {message.sending ? (
-                            <span>Sending...</span>
-                          ) : message.read ? (
-                            <span>✓✓</span>
-                          ) : (
-                            <span>✓</span>
-                          )}
-                        </span>
-                      )}
+                      <div className="flex space-x-3">
+                        <button
+                          onClick={() => handleFriendRequestResponse(request._id, 'accept')}
+                          className="px-4 py-2 bg-gradient-to-r from-green-500 to-green-600 text-white rounded-lg hover:from-green-600 hover:to-green-700 transition-colors shadow-md"
+                        >
+                          Accept
+                        </button>
+                        <button
+                          onClick={() => handleFriendRequestResponse(request._id, 'reject')}
+                          className="px-4 py-2 bg-gradient-to-r from-red-400 to-red-500 text-white rounded-lg hover:from-red-500 hover:to-red-600 transition-colors shadow-md"
+                        >
+                          Decline
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                </div>
-              ))}
-              
-              {/* Typing indicator */}
-              {typingUsers[activeConversation.friendId] && (
-                <div className="flex items-center text-gray-500 text-sm">
-                  <span className="mr-2">{activeConversation.friendName} is typing</span>
-                  <div className="flex space-x-1">
-                    <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
-                    <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
-                    <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }}></div>
-                  </div>
-                </div>
-              )}
-            </div>
+                  ))}
+        </div>
+              </div>
+            )}
             
-            {/* Input area */}
-            <div className="p-3 border-t bg-white">
-              <form 
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  handleSendMessage();
-                }}
-                className="flex gap-2"
-              >
-                <input
-                  type="text"
-                  value={currentMessage}
-                  onChange={handleInputChange}
-                  className="flex-1 p-2 border rounded-lg"
-                  placeholder="Type a message..."
-                />
-                <button
-                  type="submit"
-                  className="bg-blue-500 text-white px-4 py-2 rounded-lg"
-                >
-                  Send
-                </button>
-              </form>
-            </div>
-          </div>
-        ) : (
-          <div className="flex-1 bg-white rounded-lg shadow flex items-center justify-center">
-            <div className="text-center text-gray-500">
-              <div className="text-4xl mb-2">
-                <span role="img" aria-label="Chat">💬</span>
-              </div>
-              <div>Select a conversation or start a new chat with a friend</div>
-            </div>
-          </div>
-        )}
-      </div>
-    );
-  };
-
-  if (loading) {
-    return <div className="flex justify-center items-center h-screen">Loading...</div>;
-  }
-
-  if (error) {
-    return <div className="flex justify-center items-center h-screen text-red-500">{error}</div>;
-  }
-
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-sky-50 to-indigo-50">
-      {/* Navbar */}
-      <nav className="bg-gradient-to-r from-blue-500 to-sky-500 shadow-lg">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between h-16">
-            <div className="flex items-center">
-              <div className="flex-shrink-0">
-                <h1 className="text-2xl font-bold text-white">RoommateMatch</h1>
-              </div>
-            </div>
-            <div className="flex items-center">
-              {userProfile && (
-                <div className="flex items-center space-x-4">
-                  <span className="text-white">{userProfile.username}</span>
-                  <div className="relative">
-                    {userProfile.profile && userProfile.profile.photoUrl ? (
-                      <img
-                        src={userProfile.profile.photoUrl.startsWith('http')
-                          ? userProfile.profile.photoUrl
-                          : `http://localhost:5002${userProfile.profile.photoUrl}`}
-                        alt={userProfile.username}
-                        className="h-8 w-8 rounded-full object-cover border-2 border-white"
-                      />
-                    ) : (
-                      <div className="h-8 w-8 rounded-full bg-gray-200 flex items-center justify-center border-2 border-white">
-                        <span className="text-sm font-medium text-gray-600">
-                          {userProfile.username?.charAt(0)?.toUpperCase() || '?'}
-                        </span>
+            {/* Friends Section */}
+            <h3 className="text-xl font-semibold mb-3 text-indigo-700">Friends</h3>
+            <div className="bg-white p-5 rounded-xl shadow-lg">
+              {friends && friends.length > 0 ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {friends.map(friend => (
+                    <div key={friend._id} className="border rounded-xl p-5 hover:shadow-lg transition-all duration-300 bg-gradient-to-br from-white via-white to-blue-50">
+                      <div className="flex items-center mb-4">
+                        <div className="h-16 w-16 rounded-full bg-gradient-to-r from-blue-200 to-indigo-200 mr-4 overflow-hidden shadow-md border-2 border-white">
+                          {friend.profileImage ? (
+                            <img src={friend.profileImage} alt={friend.username} className="h-full w-full object-cover" />
+                          ) : (
+                            <div className="h-full w-full flex items-center justify-center bg-gradient-to-r from-blue-300 to-indigo-300 text-white text-xl font-bold">
+                              {friend.username.charAt(0).toUpperCase()}
+                            </div>
+                          )}
+                        </div>
+                        <div>
+                          <h3 className="font-bold text-lg text-gray-800">{friend.username}</h3>
+                          <p className="text-sm text-gray-600">
+                            {onlineUsers.includes(friend._id) ? 
+                              <span className="text-green-500 flex items-center">
+                                <span className="h-2 w-2 bg-green-500 rounded-full mr-1 animate-pulse"></span>
+                                Online
+                              </span> : 
+                              <span className="text-gray-400 flex items-center">
+                                <span className="h-2 w-2 bg-gray-300 rounded-full mr-1"></span>
+                                Offline
+                              </span>
+                            }
+                          </p>
+                        </div>
                       </div>
-                    )}
+                      <div className="flex space-x-2 mt-4">
+                        <button
+                          onClick={() => handleChat(friend)}
+                          className="flex-1 px-3 py-2 bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-lg hover:from-blue-600 hover:to-blue-700 transition-colors shadow-md"
+                        >
+                          Message
+                        </button>
+                        <button
+                          onClick={() => handleViewProfile(friend)}
+                          className="flex-1 px-3 py-2 bg-gradient-to-r from-gray-100 to-gray-200 text-gray-700 rounded-lg hover:from-gray-200 hover:to-gray-300 transition-colors shadow-sm"
+                        >
+                          Profile
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-12">
+                  <div className="text-5xl mb-4">
+                    <span role="img" aria-label="Waving hand">👋</span>
                   </div>
+                  <h3 className="text-xl font-semibold text-gray-700 mb-2">No connections yet</h3>
+                  <p className="text-gray-500 mb-6">Find matches to connect with potential roommates!</p>
                   <button
-                    onClick={handleLogout}
-                    className="bg-white bg-opacity-20 hover:bg-opacity-30 text-white px-3 py-1 rounded-md text-sm font-medium transition-colors duration-200"
+                    onClick={() => setActiveTab('matches')}
+                    className="px-6 py-3 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-lg shadow hover:shadow-lg transform hover:-translate-y-1 transition-all duration-200"
                   >
-                    Logout
+                    Find Matches
                   </button>
                 </div>
               )}
             </div>
           </div>
-        </div>
-      </nav>
-
-      {/* Main Content */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Loading and Error States */}
-        {loading && (
-          <div className="flex flex-col items-center justify-center h-64">
-            <div className="animate-spin rounded-full h-16 w-16 border-t-4 border-b-4 border-blue-500"></div>
-            <p className="mt-4 text-blue-600 font-medium">Loading your dashboard...</p>
-          </div>
-        )}
-
-        {error && (
-          <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-6 rounded-md">
-            <p>{error}</p>
-          </div>
-        )}
-
-        {/* Dashboard Tabs */}
-        {!loading && !error && (
-          <>
-            <div className="mb-6 bg-white rounded-xl shadow-md overflow-hidden">
-              <div className="flex flex-wrap">
-                {/* Tab navigation */}
-                <div className="w-full md:w-64 bg-gradient-to-b from-blue-400 to-sky-500 p-4 md:p-6">
-                  <div className="space-y-2">
-                    <button
-                      onClick={() => setActiveTab('profile')}
-                      className={`w-full px-4 py-3 rounded-lg text-left transition-all ${
-                        activeTab === 'profile'
-                          ? 'bg-white text-blue-600 font-semibold shadow-md transform scale-105'
-                          : 'text-white hover:bg-white hover:bg-opacity-20'
-                      }`}
-                    >
-                      <div className="flex items-center">
-                        <span className="text-xl mr-3">👤</span>
-                        Profile
+        );
+      case 'chats':
+        return (
+          <div className="p-4">
+            <h2 className="text-2xl font-bold mb-6">Messages</h2>
+            <div className="bg-white rounded-xl shadow-lg overflow-hidden">
+              {conversations && conversations.length > 0 ? (
+                <div className="flex flex-col md:flex-row h-[600px]">
+                  <div className="w-full md:w-1/3 border-r border-gray-200 overflow-y-auto">
+                    {conversations.map(conversation => (
+                      <div 
+                        key={conversation.friendId}
+                        className={`flex items-center justify-between p-4 cursor-pointer transition-colors ${
+                          activeConversation?.friendId === conversation.friendId 
+                            ? 'bg-blue-50 border-l-4 border-blue-500' 
+                            : 'hover:bg-gray-50 border-l-4 border-transparent'
+                        }`}
+                        onClick={() => setActiveConversation(conversation)}
+                      >
+              <div className="flex items-center">
+                          <div className="h-12 w-12 rounded-full bg-gradient-to-r from-blue-200 to-indigo-200 mr-3 overflow-hidden shadow-md border border-white relative">
+                            {conversation.avatar ? (
+                              <img src={conversation.avatar} alt={conversation.name} className="h-full w-full object-cover" />
+                            ) : (
+                              <div className="h-full w-full flex items-center justify-center bg-gradient-to-r from-blue-300 to-indigo-300 text-white text-lg font-bold">
+                                {conversation.name.charAt(0).toUpperCase()}
                       </div>
-                    </button>
-
-                    <button
-                      onClick={() => setActiveTab('preferences')}
-                      className={`w-full px-4 py-3 rounded-lg text-left transition-all ${
-                        activeTab === 'preferences'
-                          ? 'bg-white text-blue-600 font-semibold shadow-md transform scale-105'
-                          : 'text-white hover:bg-white hover:bg-opacity-20'
-                      }`}
-                    >
-                      <div className="flex items-center">
-                        <span className="text-xl mr-3">⚙️</span>
-                        Preferences
-                      </div>
-                    </button>
-
-                    <button
-                      onClick={() => setActiveTab('matches')}
-                      className={`w-full px-4 py-3 rounded-lg text-left transition-all ${
-                        activeTab === 'matches'
-                          ? 'bg-white text-blue-600 font-semibold shadow-md transform scale-105'
-                          : 'text-white hover:bg-white hover:bg-opacity-20'
-                      }`}
-                    >
-                      <div className="flex items-center">
-                        <span className="text-xl mr-3">🔍</span>
-                        Matches
-                      </div>
-                    </button>
-
-                    <button
-                      onClick={() => setActiveTab('messages')}
-                      className={`w-full px-4 py-3 rounded-lg text-left transition-all ${
-                        activeTab === 'messages'
-                          ? 'bg-white text-blue-600 font-semibold shadow-md transform scale-105'
-                          : 'text-white hover:bg-white hover:bg-opacity-20'
-                      }`}
-                    >
-                      <div className="flex items-center">
-                        <span className="text-xl mr-3">💬</span>
-                        Connections
-                        {friendRequests.filter(request => request.status === 'pending').length > 0 && (
-                          <span className="ml-2 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
-                            {friendRequests.filter(request => request.status === 'pending').length}
+                    )}
+                            {onlineUsers.includes(conversation.friendId) && (
+                              <div className="absolute bottom-0 right-0 h-3 w-3 bg-green-500 rounded-full border border-white"></div>
+                            )}
+                          </div>
+                          <div className="pr-2">
+                            <h4 className="font-medium text-gray-800">{conversation.name}</h4>
+                            <p className="text-xs text-gray-500 truncate max-w-[150px]">
+                              {typingUsers[conversation.friendId] 
+                                ? <span className="text-blue-500">typing...</span>
+                                : conversation.lastMessage || 'Start a conversation'}
+                            </p>
+                          </div>
+                        </div>
+                        {unreadMessages[conversation.friendId] > 0 && (
+                          <span className="bg-blue-500 text-white text-xs font-bold px-2 py-1 rounded-full">
+                            {unreadMessages[conversation.friendId]}
                           </span>
                         )}
                       </div>
-                    </button>
-
-                    <button
-                      onClick={() => setActiveTab('chats')}
-                      className={`w-full px-4 py-3 rounded-lg text-left transition-all ${
-                        activeTab === 'chats'
-                          ? 'bg-white text-blue-600 font-semibold shadow-md transform scale-105'
-                          : 'text-white hover:bg-white hover:bg-opacity-20'
-                      }`}
-                    >
-                      <div className="flex items-center">
-                        <span className="text-xl mr-3">📱</span>
-                        Chats
-                      </div>
-                    </button>
+                    ))}
+                  </div>
+                  
+                  <div className="w-full md:w-2/3 flex flex-col h-full">
+                    {activeConversation ? (
+                      <>
+                        <div className="p-4 border-b border-gray-200 bg-gray-50 flex items-center justify-between">
+                          <div className="flex items-center">
+                            <div className="h-10 w-10 rounded-full bg-gradient-to-r from-blue-200 to-indigo-200 mr-3 overflow-hidden shadow-sm">
+                              {activeConversation.avatar ? (
+                                <img src={activeConversation.avatar} alt={activeConversation.name} className="h-full w-full object-cover" />
+                              ) : (
+                                <div className="h-full w-full flex items-center justify-center bg-gradient-to-r from-blue-300 to-indigo-300 text-white text-sm font-bold">
+                                  {activeConversation.name.charAt(0).toUpperCase()}
+                                </div>
+                  )}
+                </div>
+    <div>
+                              <h3 className="font-medium text-gray-800">{activeConversation.name}</h3>
+                              <p className="text-xs text-gray-500">
+                    {onlineUsers.includes(activeConversation.friendId) 
+                                  ? <span className="text-green-500">Online</span>
+                      : 'Offline'}
+                              </p>
                   </div>
                 </div>
-
-                {/* Tab content */}
-                <div className="w-full md:w-[calc(100%-16rem)] p-6">
-                  {/* Each tab content will be displayed here */}
-                  {activeTab === 'profile' && (
-                    <div className="space-y-6 bg-white p-8 rounded-lg shadow-sm">
-                      <h2 className="text-3xl font-bold text-gray-800 mb-6">Your Profile</h2>
-                      
-                      {profileIncomplete && (
-                        <div className="bg-gradient-to-r from-blue-50 to-indigo-50 p-6 rounded-xl border border-blue-200 mb-6">
-                          <h3 className="text-xl font-semibold text-blue-700">Welcome to Roommate Finder!</h3>
-                          <p className="text-blue-600 mt-2">
-                            To get started, please complete your profile information. This helps potential 
-                            roommates learn more about you and improves the quality of your matches.
-                          </p>
-                          <ul className="list-disc list-inside mt-3 text-blue-600">
-                            <li>Fill in your personal information</li>
-                            <li>Set your roommate preferences</li>
-                            <li>Upload a profile photo</li>
-                          </ul>
-                        </div>
-                      )}
-                      
-                      <div className="flex flex-col md:flex-row items-start gap-8">
-                        <div className="w-full md:w-1/3">
-                          <div className="bg-gradient-to-b from-indigo-100 to-purple-100 p-6 rounded-xl shadow-sm">
-                            <div className="w-40 h-40 mx-auto rounded-full bg-white p-2 shadow-md overflow-hidden">
-                              {userProfile && userProfile.profile && userProfile.profile.photoUrl ? (
-                                <img
-                                  src={userProfile.profile.photoUrl.startsWith('http')
-                                    ? userProfile.profile.photoUrl
-                                    : `http://localhost:5002${userProfile.profile.photoUrl}`}
-                                  alt="Profile" 
-                                  className="w-full h-full object-cover rounded-full"
-                                />
-                              ) : (
-                                <div className="w-full h-full flex items-center justify-center rounded-full bg-gray-200">
-                                  <span className="text-5xl">👤</span>
-                                </div>
-                              )}
-                            </div>
-                            
-                            <h3 className="text-xl font-bold text-center mt-4 text-gray-800">
-                              {userProfile && userProfile.profile && userProfile.profile.fullName 
-                                ? userProfile.profile.fullName 
-                                : userProfile?.username || 'Welcome Back!'}
-                            </h3>
-                            
-                            {userProfile?.profile?.occupation && (
-                              <p className="text-center text-purple-600">{userProfile.profile.occupation}</p>
-                            )}
-                          </div>
-                          
-                          <div className="mt-6 bg-white p-6 rounded-xl shadow-sm">
-                            <h3 className="text-lg font-semibold mb-3 text-gray-700">Verification Status</h3>
-                            <div className="space-y-3">
-                              <div className="flex justify-between items-center">
-                                <span className="text-gray-600">Email</span>
-                                {userProfile?.emailVerified ? (
-                                  <span className="bg-green-100 text-green-800 text-xs font-medium px-2.5 py-1 rounded-full flex items-center">
-                                    <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
-                                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd"></path>
-                                    </svg>
-                                    Verified
-                                  </span>
-                                ) : (
-                                  <span className="bg-yellow-100 text-yellow-800 text-xs font-medium px-2.5 py-1 rounded-full flex items-center">
-                                    <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
-                                      <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd"></path>
-                                    </svg>
-                                    Not Verified
-                                  </span>
-                                )}
-                              </div>
-                              <div className="flex justify-between items-center">
-                                <span className="text-gray-600">Phone</span>
-                                {userProfile?.isPhoneVerified ? (
-                                  <span className="bg-green-100 text-green-800 text-xs font-medium px-2.5 py-1 rounded-full flex items-center">
-                                    <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
-                                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd"></path>
-                                    </svg>
-                                    Verified
-                                  </span>
-                                ) : (
-                                  <span className="bg-yellow-100 text-yellow-800 text-xs font-medium px-2.5 py-1 rounded-full flex items-center">
-                                    <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
-                                      <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd"></path>
-                                    </svg>
-                                    Not Verified
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                        
-                        <div className="w-full md:w-2/3 space-y-6">
-                          <div className="bg-white p-6 rounded-xl shadow-sm">
-                            <h3 className="text-xl font-semibold mb-6 text-gray-700">Profile Details</h3>
-                            
-                            {userProfile?.profile && (
-                              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                <div>
-                                  <p className="text-sm text-gray-500">Full Name</p>
-                                  <p className="text-gray-800 font-medium">{userProfile.profile.fullName || 'Not provided'}</p>
-                                </div>
-                                <div>
-                                  <p className="text-sm text-gray-500">Username</p>
-                                  <p className="text-gray-800 font-medium">{userProfile.username}</p>
-                                </div>
-                                <div>
-                                  <p className="text-sm text-gray-500">Email</p>
-                                  <p className="text-gray-800 font-medium">{userProfile.email}</p>
-                                </div>
-                                <div>
-                                  <p className="text-sm text-gray-500">Phone</p>
-                                  <p className="text-gray-800 font-medium">{userProfile.profile.phone || userProfile.phoneNumber || 'Not provided'}</p>
-                                </div>
-                                <div>
-                                  <p className="text-sm text-gray-500">Address</p>
-                                  <p className="text-gray-800 font-medium">{userProfile.profile.address || 'Not provided'}</p>
-                                </div>
-                                <div>
-                                  <p className="text-sm text-gray-500">Occupation</p>
-                                  <p className="text-gray-800 font-medium">{userProfile.profile.occupation || 'Not provided'}</p>
-                                </div>
-                                <div className="col-span-2">
-                                  <p className="text-sm text-gray-500">Bio</p>
-                                  <p className="text-gray-800">{userProfile.profile.bio || 'No bio provided'}</p>
-                                </div>
-                              </div>
-                            )}
-                            
-                            <div className="mt-8 flex flex-wrap gap-4">
-                              <button
-                                onClick={() => navigate('/profile')}
-                                className="px-6 py-3 bg-gradient-to-r from-blue-400 to-sky-500 text-white rounded-full hover:from-blue-500 hover:to-sky-600 shadow-md hover:shadow-lg transition-all"
-                              >
-                                {profileIncomplete ? 'Complete Your Profile' : 'Edit Profile'}
-                              </button>
-                              <Link
-                                to="/verify-email"
-                                className="px-6 py-3 bg-gradient-to-r from-teal-400 to-cyan-500 text-white rounded-full hover:from-teal-500 hover:to-cyan-600 shadow-md hover:shadow-lg transition-all"
-                              >
-                                Verify Email
-                              </Link>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                  
-                  {activeTab === 'preferences' && (
-                    <div className="bg-white p-8 rounded-lg shadow-sm">
-                      {/* Preferences content from PreferenceForm component */}
-                      {userProfile && userProfile.preferences && 
-                        Object.values(userProfile.preferences).some(val => val !== null) ? (
-                        <div>
-                          <div className="mb-6">
-                            <h2 className="text-3xl font-bold text-gray-800 mb-2">Your Preferences</h2>
-                            <p className="text-gray-600">These preferences help us find compatible roommates for you.</p>
-                          </div>
-                          
-                          <div className="flex justify-end mb-6">
-                            <button 
-                              onClick={() => setEditingPreferences(true)}
-                              className="px-6 py-3 bg-gradient-to-r from-blue-400 to-sky-500 text-white rounded-full hover:from-blue-500 hover:to-sky-600 shadow-md hover:shadow-lg transition-all"
-                            >
-                              Update Preferences
-                            </button>
-                          </div>
-                          
-                          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-                            {userProfile.preferences.location && (
-                              <div className="col-span-full bg-white p-4 rounded-xl border border-gray-200 shadow-md mb-4">
-                                <div className="flex items-center">
-                                  <span className="text-3xl mr-3">📍</span>
-                                  <div>
-                                    <p className="font-semibold text-gray-600">Preferred Location</p>
-                                    <p className="text-blue-600 text-xl font-bold">{userProfile.preferences.location}</p>
-                                  </div>
-                                </div>
-                              </div>
-                            )}
-                            
-                            {userProfile.preferences.gender && (
-                              <div className="col-span-full bg-white p-4 rounded-xl border border-gray-200 shadow-md mb-4">
-                                <div className="flex items-center">
-                                  <span className="text-3xl mr-3">{userProfile.preferences.gender === 'Male' ? '👨' : userProfile.preferences.gender === 'Female' ? '👩' : '👥'}</span>
-                                  <div>
-                                    <p className="font-semibold text-gray-600">Looking For</p>
-                                    <p className="text-blue-600 text-xl font-bold">{userProfile.preferences.gender} Roommate</p>
-                                  </div>
-                                </div>
-                              </div>
-                            )}
-                            
-                            {userProfile.preferences.rent && (
-                              <div className="col-span-full bg-white p-4 rounded-xl border border-gray-200 shadow-md mb-4">
-                                <div className="flex items-center">
-                                  <span className="text-3xl mr-3">₹</span>
-                                  <div>
-                                    <p className="font-semibold text-gray-600">Budget</p>
-                                    <p className="text-blue-600 text-xl font-bold">₹ {userProfile.preferences.rent}</p>
-                                  </div>
-                                </div>
-                              </div>
-                            )}
-                            
-                            {userProfile.preferences.cleanliness && (
-                              <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-md">
-                                <p className="font-medium text-gray-600">Cleanliness</p>
-                                <div className="flex items-center mt-2">
-                                  <span className="text-2xl mr-2">✨</span>
-                                  <p className="text-gray-800 font-medium">{userProfile.preferences.cleanliness}</p>
-                                </div>
-                              </div>
-                            )}
-                            
-                            {userProfile.preferences.smoking && (
-                              <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-md">
-                                <p className="font-medium text-gray-600">Smoking</p>
-                                <div className="flex items-center mt-2">
-                                  <span className="text-2xl mr-2">🚭</span>
-                                  <p className="text-gray-800 font-medium">{userProfile.preferences.smoking}</p>
-                                </div>
-                              </div>
-                            )}
-                            
-                            {userProfile.preferences.pets && (
-                              <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-md">
-                                <p className="font-medium text-gray-600">Pets</p>
-                                <div className="flex items-center mt-2">
-                                  <span className="text-2xl mr-2">🐾</span>
-                                  <p className="text-gray-800 font-medium">{userProfile.preferences.pets}</p>
-                                </div>
-                              </div>
-                            )}
-                            
-                            {userProfile.preferences.workSchedule && (
-                              <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-md">
-                                <p className="font-medium text-gray-600">Work Schedule</p>
-                                <div className="flex items-center mt-2">
-                                  <span className="text-2xl mr-2">
-                                    {userProfile.preferences.workSchedule === 'Night Owl' ? '🦉' : 
-                                     userProfile.preferences.workSchedule === 'Regular Hours' ? '☀️' : '⏱️'}
-                                  </span>
-                                  <p className="text-gray-800 font-medium">{userProfile.preferences.workSchedule}</p>
-                                </div>
-                              </div>
-                            )}
-                            
-                            {userProfile.preferences.socialLevel && (
-                              <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-md">
-                                <p className="font-medium text-gray-600">Social Level</p>
-                                <div className="flex items-center mt-2">
-                                  <span className="text-2xl mr-2">
-                                    {userProfile.preferences.socialLevel === 'Very Social' ? '🎉' : 
-                                     userProfile.preferences.socialLevel === 'Not Social' ? '🧘' : '👥'}
-                                  </span>
-                                  <p className="text-gray-800 font-medium">{userProfile.preferences.socialLevel}</p>
-                                </div>
-                              </div>
-                            )}
-                            
-                            {userProfile.preferences.guestPreference && (
-                              <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-md">
-                                <p className="font-medium text-gray-600">Guest Policy</p>
-                                <div className="flex items-center mt-2">
-                                  <span className="text-2xl mr-2">
-                                    {userProfile.preferences.guestPreference === 'Frequent Guests' ? '👋👋' : 
-                                     userProfile.preferences.guestPreference === 'No Guests' ? '🔒' : '👋'}
-                                  </span>
-                                  <p className="text-gray-800 font-medium">{userProfile.preferences.guestPreference}</p>
-                                </div>
-                              </div>
-                            )}
-                            
-                            {userProfile.preferences.music && (
-                              <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-md">
-                                <p className="font-medium text-gray-600">Music/Noise</p>
-                                <div className="flex items-center mt-2">
-                                  <span className="text-2xl mr-2">
-                                    {userProfile.preferences.music === 'Shared Music OK' ? '🎵' : 
-                                     userProfile.preferences.music === 'Quiet Environment' ? '🤫' : '🎧'}
-                                  </span>
-                                  <p className="text-gray-800 font-medium">{userProfile.preferences.music}</p>
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      ) : (
-                        <PreferenceForm onSubmit={(preferences) => {
-                          // Handle preferences submission
-                          const token = localStorage.getItem('token');
-                          axios.post('http://localhost:5002/api/user/preferences', 
-                            { preferences },
-                            { headers: { Authorization: `Bearer ${token}` } }
-                          ).then(response => {
-                            alert('Preferences saved successfully!');
-                            fetchData();
-                            setActiveTab('matches');
-                          }).catch(error => {
-                            console.error('Error saving preferences:', error);
-                            alert('Failed to save preferences');
-                          });
-                        }} />
-                      )}
-                      
-                      {/* Show edit form in modal when editing is true */}
-                      {editingPreferences && userProfile && userProfile.preferences && (
-                        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-                          <div className="bg-white rounded-xl p-6 max-w-4xl w-full max-h-[90vh] overflow-y-auto">
-                            <div className="flex justify-between items-center mb-4">
-                              <h3 className="text-2xl font-bold text-gray-800">Update Your Preferences</h3>
-                              <button
-                                onClick={() => setEditingPreferences(false)}
-                                className="text-gray-400 hover:text-gray-600 transition-colors"
-                              >
-                                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path>
-                                </svg>
-                              </button>
-                            </div>
-                            
-                            <PreferenceForm 
-                              initialValues={userProfile.preferences}
-                              onSubmit={(preferences) => {
-                                // Handle preferences update
-                                const token = localStorage.getItem('token');
-                                axios.post('http://localhost:5002/api/user/preferences', 
-                                  { preferences },
-                                  { headers: { Authorization: `Bearer ${token}` } }
-                                ).then(response => {
-                                  alert('Preferences updated successfully!');
-                                  setEditingPreferences(false);
-                                  fetchData();
-                                }).catch(error => {
-                                  console.error('Error updating preferences:', error);
-                                  alert('Failed to update preferences');
-                                });
-                              }}
-                            />
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  
-                  {activeTab === 'matches' && (
-                    <div className="space-y-6">
-                      <h2 className="text-3xl font-bold text-gray-800 mb-6">Potential Roommates</h2>
-                      
-                      {profileIncomplete ? (
-                        <div className="bg-gradient-to-r from-blue-50 to-sky-50 p-6 rounded-xl border border-blue-200">
-                          <h3 className="text-xl font-semibold text-blue-700">Profile Incomplete</h3>
-                          <p className="text-blue-600 mt-2">
-                            Please complete your profile and preferences to see potential roommate matches.
-                          </p>
-                          <button
-                            onClick={() => setActiveTab('profile')}
-                            className="mt-4 px-6 py-3 bg-gradient-to-r from-blue-400 to-sky-500 text-white rounded-full hover:from-blue-500 hover:to-sky-600 shadow-md hover:shadow-lg transition-all"
-                          >
-                            Complete Profile
-                          </button>
-                        </div>
-                      ) : matches && matches.length > 0 ? (
-                        <div className="space-y-8">
-                          {/* Location Matches */}
-                          {matches.some(match => match.isLocationMatch) && (
-                            <div>
-                              <h3 className="text-xl font-semibold text-blue-700 mb-4 flex items-center">
-                                <span className="mr-2">📍</span> 
-                                Matches in {userProfile?.preferences?.location || 'Your Area'}
-                              </h3>
-                              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                                {matches
-                                  .filter(match => match.isLocationMatch)
-                                  .map((match) => (
-                                    <div key={match._id || match.userId} className="bg-white rounded-lg shadow-lg overflow-hidden border border-gray-200">
-                                      <div className="flex">
-                                        {/* Left side - profile photo */}
-                                        <div className="w-1/3 bg-gray-100 flex items-center justify-center p-4">
-                                          {match.profile && match.profile.photoUrl ? (
-                                            <img
-                                              src={match.profile.photoUrl.startsWith('http') 
-                                                ? match.profile.photoUrl 
-                                                : `http://localhost:5002${match.profile.photoUrl}`}
-                                              alt={match.profile?.fullName || 'User'}
-                                              className="w-full h-48 object-cover"
-                                            />
-                                          ) : (
-                                            <div className="w-32 h-32 rounded-full bg-gray-200 flex items-center justify-center">
-                                              <span className="text-5xl">👤</span>
-                                            </div>
-                                          )}
-                                        </div>
-                                        
-                                        {/* Right side - profile details */}
-                                        <div className="w-2/3 p-5">
-                                          <h3 className="text-2xl font-semibold mb-2">{match.profile?.fullName || match.username}</h3>
-                                          
-                                          <div className="flex items-center text-gray-500 mb-4">
-                                            <span className="mr-2">📍</span>
-                                            <span>{match.profile?.address || match.preferences?.location || 'Location not specified'}</span>
-                                          </div>
-                                          
-                                          <div className="grid grid-cols-2 gap-4 mb-6">
-                                            <div>
-                                              <p className="text-gray-500">Rent</p>
-                                              <p className="text-xl font-semibold">₹ {match.preferences?.rent || '8000'}</p>
-                                            </div>
-                                            <div>
-                                              <p className="text-gray-500">Looking for</p>
-                                              <p className="text-xl font-semibold">{match.preferences?.gender || 'Any'} Roommate</p>
-                                            </div>
-                                            <div>
-                                              <p className="text-gray-500">Distance</p>
-                                              <p className="text-xl font-semibold">
-                                                {match.distance ? `${match.distance} km` : 'Same area'}
-                                              </p>
-                                            </div>
-                                          </div>
-                                          
-                                          <div className="border-t pt-3 flex items-center justify-between">
-                                            <div className="flex items-center">
-                                              <span className="text-blue-600 font-semibold">Match Score:</span>
-                                            </div>
-                                            <div className="flex items-center bg-blue-100 px-3 py-1 rounded-full">
-                                              <span className="text-blue-700 font-bold">{match.matchPercentage}%</span>
-                                            </div>
-                                          </div>
-                                          
-                                          <div className="flex justify-between mt-4 gap-2">
-                                            <button
-                                              onClick={() => handleViewProfile(match)}
-                                              className="flex-1 bg-blue-500 text-white py-2 rounded-md hover:bg-blue-600 transition-colors flex items-center justify-center"
-                                            >
-                                              <svg className="w-4 h-4 mr-2" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                                <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z" fill="currentColor"/>
-                                              </svg>
-                                              View
-                                            </button>
-                                            <button
-                                              onClick={() => {
-                                                const id = match._id || match.userId;
-                                                handleSendFriendRequest(id);
-                                              }}
-                                              className="flex-1 bg-sky-500 text-white py-2 rounded-md hover:bg-sky-600 transition-colors flex items-center justify-center"
-                                            >
-                                              <svg className="w-4 h-4 mr-2" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                                <path d="M15 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm-9-2V7H4v3H1v2h3v3h2v-3h3v-2H6zm9 4c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" fill="currentColor"/>
-                                              </svg>
-                                              Connect
-                                            </button>
-                                          </div>
-                                        </div>
-                                      </div>
-                                    </div>
-                                  ))}
-                              </div>
-                            </div>
-                          )}
-                          
-                          {/* Other Matches */}
-                          {matches.some(match => !match.isLocationMatch) && (
-                            <div className="mt-12">
-                              <h3 className="text-xl font-semibold text-gray-700 mb-4">Other Potential Matches</h3>
-                              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                                {matches
-                                  .filter(match => !match.isLocationMatch)
-                                  .map((match) => (
-                                    <div key={match._id || match.userId} className="bg-white rounded-lg shadow-lg overflow-hidden border border-gray-200">
-                                      <div className="flex">
-                                        {/* Left side - profile photo */}
-                                        <div className="w-1/3 bg-gray-100 flex items-center justify-center p-4">
-                                          {match.profile && match.profile.photoUrl ? (
-                                            <img
-                                              src={match.profile.photoUrl.startsWith('http') 
-                                                ? match.profile.photoUrl 
-                                                : `http://localhost:5002${match.profile.photoUrl}`}
-                                              alt={match.profile?.fullName || 'User'}
-                                              className="w-full h-48 object-cover"
-                                            />
-                                          ) : (
-                                            <div className="w-32 h-32 rounded-full bg-gray-200 flex items-center justify-center">
-                                              <span className="text-5xl">👤</span>
-                                            </div>
-                                          )}
-                                        </div>
-                                        
-                                        {/* Right side - profile details */}
-                                        <div className="w-2/3 p-5">
-                                          <h3 className="text-2xl font-semibold mb-2">{match.profile?.fullName || match.username}</h3>
-                                          
-                                          <div className="flex items-center text-gray-500 mb-4">
-                                            <span className="mr-2">📍</span>
-                                            <span>{match.profile?.address || match.preferences?.location || 'Location not specified'}</span>
-                                          </div>
-                                          
-                                          <div className="grid grid-cols-2 gap-4 mb-6">
-                                            <div>
-                                              <p className="text-gray-500">Rent</p>
-                                              <p className="text-xl font-semibold">₹ {match.preferences?.rent || '10000'}</p>
-                                            </div>
-                                            <div>
-                                              <p className="text-gray-500">Looking for</p>
-                                              <p className="text-xl font-semibold">{match.preferences?.gender || 'Any'} Roommate</p>
-                                            </div>
-                                            <div>
-                                              <p className="text-gray-500">Distance</p>
-                                              <p className="text-xl font-semibold">
-                                                {match.distance ? `${match.distance} km` : 'Same area'}
-                                              </p>
-                                            </div>
-                                          </div>
-                                          
-                                          <div className="border-t pt-3 flex items-center justify-between">
-                                            <div className="flex items-center">
-                                              <span className="text-blue-600 font-semibold">Match Score:</span>
-                                            </div>
-                                            <div className="flex items-center bg-blue-100 px-3 py-1 rounded-full">
-                                              <span className="text-blue-700 font-bold">{match.matchPercentage}%</span>
-                                            </div>
-                                          </div>
-                                          
-                                          <div className="flex justify-between mt-4 gap-2">
-                                            <button
-                                              onClick={() => handleViewProfile(match)}
-                                              className="flex-1 bg-blue-500 text-white py-2 rounded-md hover:bg-blue-600 transition-colors flex items-center justify-center"
-                                            >
-                                              <svg className="w-4 h-4 mr-2" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                                <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z" fill="currentColor"/>
-                                              </svg>
-                                              View
-                                            </button>
-                                            <button
-                                              onClick={() => {
-                                                const id = match._id || match.userId;
-                                                handleSendFriendRequest(id);
-                                              }}
-                                              className="flex-1 bg-sky-500 text-white py-2 rounded-md hover:bg-sky-600 transition-colors flex items-center justify-center"
-                                            >
-                                              <svg className="w-4 h-4 mr-2" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                                <path d="M15 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm-9-2V7H4v3H1v2h3v3h2v-3h3v-2H6zm9 4c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" fill="currentColor"/>
-                                              </svg>
-                                              Connect
-                                            </button>
-                                          </div>
-                                        </div>
-                                      </div>
-                                    </div>
-                                  ))}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      ) : (
-                        <div className="flex flex-col items-center justify-center py-12 bg-white rounded-xl p-8 shadow-sm">
-                          <div className="text-6xl mb-4">🔍</div>
-                          <h3 className="text-xl font-semibold text-gray-800 mb-2">No matches found yet</h3>
-                          <p className="text-gray-600 text-center max-w-md">
-                            We're looking for compatible roommates based on your preferences! Make sure your preferences are set and check back later.
-                          </p>
-                          
-                          {userProfile && (!userProfile.preferences || Object.values(userProfile.preferences).every(val => val === null)) && (
-                            <button
-                              onClick={() => setActiveTab('preferences')}
-                              className="mt-6 px-6 py-3 bg-gradient-to-r from-blue-400 to-sky-500 text-white rounded-full hover:from-blue-500 hover:to-sky-600 shadow-md hover:shadow-lg transition-all"
-                            >
-                              Set Your Preferences
-                            </button>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  
-                  {activeTab === 'messages' && (
-                    <div className="space-y-6 bg-white p-8 rounded-lg shadow-sm">
-                      <h2 className="text-3xl font-bold text-gray-800 mb-6">Connection Requests</h2>
-                      
-                      {/* Pending friend requests section */}
-                      {friendRequests.filter(request => request.status === 'pending').length > 0 ? (
-                        <div className="space-y-4">
-                          <h3 className="text-xl font-semibold text-gray-700 mb-4">Pending Requests</h3>
-                          <div className="divide-y">
-                            {friendRequests
-                              .filter(request => request.status === 'pending')
-                              .map(request => (
-                                <div key={request._id} className="py-4 flex items-center justify-between">
-                                  <div className="flex items-center">
-                                    <div className="w-12 h-12 rounded-full bg-gray-200 overflow-hidden mr-4">
-                                      {request.fromUser?.photoUrl ? (
-                                        <img 
-                                          src={request.fromUser.photoUrl.startsWith('http') 
-                                            ? request.fromUser.photoUrl 
-                                            : `http://localhost:5002${request.fromUser.photoUrl}`}
-                                          alt={request.fromUser?.fullName || 'User'}
-                                          className="w-full h-full object-cover"
-                                        />
-                                      ) : (
-                                        <div className="w-full h-full flex items-center justify-center">
-                                          <span className="text-xl">👤</span>
-                                        </div>
-                                      )}
-                                    </div>
-                                    <div>
-                                      <p className="font-semibold">{request.fromUser?.fullName || request.fromUser?.username || 'User'}</p>
-                                      <p className="text-sm text-gray-500">
-                                        {request.fromUser?.occupation && <span>{request.fromUser.occupation} • </span>}
-                                        {request.fromUser?.address || 'No location provided'}
-                                      </p>
-                                    </div>
-                                  </div>
-                                  <div className="flex space-x-3">
-                                    <button
-                                      onClick={() => handleFriendRequestResponse(request._id, 'accept')}
-                                      className="px-4 py-2 bg-green-500 text-white rounded-md hover:bg-green-600 transition-colors"
-                                    >
-                                      Accept
-                                    </button>
-                                    <button
-                                      onClick={() => handleFriendRequestResponse(request._id, 'reject')}
-                                      className="px-4 py-2 bg-gray-200 text-gray-700 rounded-md hover:bg-gray-300 transition-colors"
-                                    >
-                                      Decline
-                                    </button>
-                                  </div>
-                                </div>
-                              ))}
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="bg-gray-50 p-6 rounded-xl text-center">
-                          <div className="text-5xl mb-4">💌</div>
-                          <h3 className="text-xl font-semibold text-gray-800 mb-2">No pending connection requests</h3>
-                          <p className="text-gray-600">
-                            When someone wants to connect with you, their request will appear here.
-                          </p>
-                        </div>
-                      )}
-
-                      {/* Accepted connections section */}
-                      {friends.length > 0 && (
-                        <div className="mt-8 space-y-4">
-                          <h3 className="text-xl font-semibold text-gray-700 mb-4">Your Connections</h3>
-                          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                            {friends.map(friend => (
-                              <div key={friend._id} className="border rounded-lg shadow-sm overflow-hidden">
-                                <div className="flex items-center p-4">
-                                  <div className="w-12 h-12 rounded-full bg-gray-200 overflow-hidden mr-4">
-                                    {friend.profile?.photoUrl ? (
-                                      <img 
-                                        src={friend.profile.photoUrl.startsWith('http') 
-                                          ? friend.profile.photoUrl 
-                                          : `http://localhost:5002${friend.profile.photoUrl}`}
-                                        alt={friend.profile?.fullName || friend.username}
-                                        className="w-full h-full object-cover"
-                                      />
-                                    ) : (
-                                      <div className="w-full h-full flex items-center justify-center">
-                                        <span className="text-xl">👤</span>
-                                      </div>
-                                    )}
-                                  </div>
-                                  <div>
-                                    <p className="font-semibold">{friend.profile?.fullName || friend.username}</p>
-                                    <p className="text-sm text-gray-500">
-                                      {friend.profile?.occupation && <span>{friend.profile.occupation} • </span>}
-                                      {friend.profile?.address || 'No location provided'}
-                                    </p>
-                                  </div>
-                                </div>
-                                <div className="bg-gray-50 p-3 flex justify-between items-center">
-                                  <button
-                                    onClick={() => handleChat(friend)}
-                                    className="w-full px-3 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 transition-colors flex items-center justify-center"
-                                  >
-                                    <svg className="w-4 h-4 mr-2" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                      <path d="M21 11.5C21.0034 12.8199 20.6951 14.1219 20.1 15.3C19.3944 16.7118 18.3098 17.8992 16.9674 18.7293C15.6251 19.5594 14.0782 19.9994 12.5 20C11.1801 20.0035 9.87812 19.6951 8.7 19.1L3 21L4.9 15.3C4.30493 14.1219 3.99656 12.8199 4 11.5C4.00061 9.92179 4.44061 8.37488 5.27072 7.03258C6.10083 5.69028 7.28825 4.6056 8.7 3.90003C9.87812 3.30496 11.1801 2.99659 12.5 3.00003H13C15.0843 3.11502 17.053 3.99479 18.5291 5.47089C20.0052 6.94699 20.885 8.91568 21 11V11.5Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                                    </svg>
-                                    Chat
-                                  </button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  
-                  {activeTab === 'chats' && (
-                    <div className="space-y-6">
-                      {renderChatsTab()}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          </>
-        )}
-      </div>
-
-      {/* Profile Modal */}
-      {showProfileModal && selectedFriend && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl p-8 max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
-            {/* Profile modal content would go here */}
-          </div>
-        </div>
-      )}
-
-      {/* Profile View Modal */}
-      {viewingProfile && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl p-6 max-w-4xl w-full max-h-[90vh] overflow-y-auto">
-            <div className="flex justify-between items-center mb-6">
-              <h3 className="text-2xl font-bold text-gray-800">User Profile</h3>
-              <button
-                onClick={closeProfileModal}
-                className="text-gray-400 hover:text-gray-600 transition-colors"
+              <button 
+                onClick={() => {
+                  const friend = friends.find(f => f._id === activeConversation.friendId);
+                              if (friend) handleViewProfile(friend);
+                }}
+                            className="text-gray-500 hover:text-gray-700"
               >
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path>
-                </svg>
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                            </svg>
               </button>
             </div>
             
-            <div className="flex flex-col md:flex-row gap-8">
-              {/* Profile Photo */}
-              <div className="w-full md:w-1/3">
-                <div className="bg-gradient-to-b from-blue-100 to-indigo-100 p-6 rounded-xl shadow-sm">
-                  <div className="w-40 h-40 mx-auto rounded-full bg-white p-2 shadow-md overflow-hidden">
-                    {viewingProfile.profile && viewingProfile.profile.photoUrl ? (
+                        <div className="flex-grow overflow-y-auto p-4 bg-gray-50" ref={chatWindowRef}>
+                          {activeConversation.messages && activeConversation.messages.length > 0 ? (
+                            <div className="space-y-3">
+              {activeConversation.messages.map((message, index) => (
+                <div 
+                                  key={message._id || index} 
+                                  className={`flex ${message.sender === 'me' ? 'justify-end' : 'justify-start'}`}
+                >
+                  <div 
+                                    className={`max-w-[70%] p-3 rounded-lg shadow-sm ${
+                                      message.sender === 'me' 
+                                        ? 'bg-blue-500 text-white rounded-br-none' 
+                                        : 'bg-white text-gray-800 rounded-bl-none'
+                                    }`}
+                                  >
+                                    <p>{message.text}</p>
+                                    <div className="text-xs mt-1 text-right">
+                                      {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      {message.sender === 'me' && (
+                                        <span className="ml-1">
+                                          {message.read ? '✓✓' : '✓'}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+                              <div ref={messagesEndRef} />
+                            </div>
+                          ) : (
+                            <div className="h-full flex items-center justify-center">
+                              <div className="text-center text-gray-500">
+                                <p>No messages yet</p>
+                                <p className="text-sm">Start the conversation by sending a message</p>
+                  </div>
+                </div>
+              )}
+            </div>
+            
+                        <div className="p-4 border-t border-gray-200 bg-white">
+                          <form onSubmit={(e) => {
+                  e.preventDefault();
+                  if (messageInput.trim()) {
+                    handleSendMessage(messageInput);
+                    setMessageInput('');
+                  }
+                          }} className="flex items-center">
+                <input
+                  type="text"
+                  value={messageInput}
+                              onChange={(e) => {
+                                setMessageInput(e.target.value);
+                                
+                                // Handle typing indicator
+                                if (!isTyping) {
+                                  setIsTyping(true);
+                                  if (socket) {
+                                    socket.emit('typing', { recipientId: activeConversation.friendId });
+                                  }
+                                }
+                                
+                                // Clear previous timeout
+                                if (typingTimeoutRef.current) {
+                                  clearTimeout(typingTimeoutRef.current);
+                                }
+                                
+                                // Set timeout to stop typing indicator
+                                typingTimeoutRef.current = setTimeout(() => {
+                                  setIsTyping(false);
+                                  if (socket) {
+                                    socket.emit('stopTyping', { recipientId: activeConversation.friendId });
+                                  }
+                                }, 2000);
+                              }}
+                  placeholder="Type a message..."
+                              className="flex-grow px-4 py-2 border rounded-l-lg focus:outline-none focus:ring-2 focus:ring-blue-400"
+                />
+                <button
+                  type="submit"
+                              className="px-4 py-2 bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-r-lg hover:from-blue-600 hover:to-blue-700"
+                >
+                              Send
+                </button>
+              </form>
+            </div>
+                      </>
+                    ) : (
+                      <div className="h-full flex items-center justify-center">
+                        <div className="text-center text-gray-500 p-6">
+                          <div className="text-5xl mb-4">
+                            <span role="img" aria-label="Message bubble">💬</span>
+                          </div>
+                          <h3 className="text-xl font-semibold text-gray-700 mb-2">Select a conversation</h3>
+                          <p className="mb-6">Choose a conversation from the list to start chatting</p>
+            </div>
+          </div>
+        )}
+      </div>
+        </div>
+              ) : (
+                <div className="text-center py-12">
+                  <div className="text-5xl mb-4">
+                    <span role="img" aria-label="Message bubble">💬</span>
+        </div>
+                  <h3 className="text-xl font-semibold text-gray-700 mb-2">No messages yet</h3>
+                  <p className="text-gray-500 mb-6">Connect with other users to start chatting!</p>
+              <button 
+                    onClick={() => setActiveTab('matches')}
+                    className="px-6 py-3 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-lg shadow hover:shadow-lg transform hover:-translate-y-1 transition-all duration-200"
+              >
+                    Find Matches
+              </button>
+                        </div>
+                      )}
+                    </div>
+                    </div>
+        );
+      case 'preferences':
+        return (
+          <div className="p-4">
+            <h2 className="text-2xl font-bold mb-6 text-gray-800">Roommate Preferences</h2>
+            
+            <div className="bg-white rounded-xl shadow-lg overflow-hidden">
+              {!editingPreferences ? (
+                <div className="p-6">
+                  {userProfile?.preferences ? (
+                    <div className="mb-6">
+                      <div className="bg-gradient-to-r from-blue-500 to-indigo-600 p-6 text-white rounded-lg mb-6">
+                        <div className="flex items-center justify-between">
+                    <div>
+                            <h3 className="text-xl font-bold mb-1">Your Preferences</h3>
+                            <p className="text-blue-100">These help us find your perfect roommate match</p>
+                    </div>
+                          <div className="text-4xl">⚙️</div>
+                    </div>
+                  </div>
+                  
+                      <div className="grid md:grid-cols-3 gap-6">
+                        <div className="bg-blue-50 rounded-xl p-5 border border-blue-100 shadow-sm transition-all duration-300 hover:shadow-md">
+                          <div className="flex items-center mb-4">
+                            <span className="text-2xl mr-3">💰</span>
+                            <h4 className="font-semibold text-lg text-blue-800">Budget</h4>
+                        </div>
+                          <div className="space-y-3">
+                            <div className="flex justify-between">
+                              <span className="text-gray-600">Min Budget:</span>
+                              <span className="font-medium text-blue-700">₹{userProfile.preferences.minBudget || 0}</span>
+                      </div>
+                            <div className="flex justify-between">
+                              <span className="text-gray-600">Max Budget:</span>
+                              <span className="font-medium text-blue-700">₹{userProfile.preferences.maxBudget || 0}</span>
+                        </div>
+                      </div>
+                    </div>
+                    
+                        <div className="bg-indigo-50 rounded-xl p-5 border border-indigo-100 shadow-sm transition-all duration-300 hover:shadow-md">
+                          <div className="flex items-center mb-4">
+                            <span className="text-2xl mr-3">👤</span>
+                            <h4 className="font-semibold text-lg text-indigo-800">Roommate</h4>
+                      </div>
+                          <div className="space-y-3">
+                            <div className="flex justify-between">
+                              <span className="text-gray-600">Gender:</span>
+                              <span className="font-medium text-indigo-700">{userProfile.preferences.genderPreference || 'Any'}</span>
+                  </div>
+                            <div className="flex justify-between">
+                              <span className="text-gray-600">Age Range:</span>
+                              <span className="font-medium text-indigo-700">{userProfile.preferences.minAge || 18} - {userProfile.preferences.maxAge || 35}</span>
+                </div>
+              </div>
+            </div>
+                        
+                        <div className="bg-purple-50 rounded-xl p-5 border border-purple-100 shadow-sm transition-all duration-300 hover:shadow-md">
+                          <div className="flex items-center mb-4">
+                            <span className="text-2xl mr-3">🏠</span>
+                            <h4 className="font-semibold text-lg text-purple-800">Location</h4>
+            </div>
+                          <div className="space-y-3">
+                            <div className="flex justify-between">
+                              <span className="text-gray-600">Area:</span>
+                              <span className="font-medium text-purple-700">{userProfile.preferences.area || 'No Preference'}</span>
+            </div>
+                            <div className="flex justify-between">
+                              <span className="text-gray-600">City:</span>
+                              <span className="font-medium text-purple-700">{userProfile.preferences.city || 'No Preference'}</span>
+            </div>
+                    </div>
+                  </div>
+                    </div>
+                      
+                      <div className="mt-6">
+                        <h4 className="font-semibold text-lg mb-3 border-b pb-2">Lifestyle Preferences</h4>
+                        <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mt-4">
+                          <div className="bg-white rounded-lg p-3 border shadow-sm">
+                            <div className="flex items-center mb-1">
+                              <span className="text-xl mr-2">🚬</span>
+                              <h5 className="font-medium text-gray-800">Smoking</h5>
+                    </div>
+                            <p className="text-gray-700 mt-1">{userProfile.preferences.smoking || 'No Preference'}</p>
+                  </div>
+                          <div className="bg-white rounded-lg p-3 border shadow-sm">
+                            <div className="flex items-center mb-1">
+                              <span className="text-xl mr-2">🍷</span>
+                              <h5 className="font-medium text-gray-800">Drinking</h5>
+                    </div>
+                            <p className="text-gray-700 mt-1">{userProfile.preferences.drinking || 'No Preference'}</p>
+                  </div>
+                          <div className="bg-white rounded-lg p-3 border shadow-sm">
+                            <div className="flex items-center mb-1">
+                              <span className="text-xl mr-2">🍲</span>
+                              <h5 className="font-medium text-gray-800">Food</h5>
+                    </div>
+                            <p className="text-gray-700 mt-1">{userProfile.preferences.foodPreference || 'No Preference'}</p>
+                  </div>
+                          <div className="bg-white rounded-lg p-3 border shadow-sm">
+                            <div className="flex items-center mb-1">
+                              <span className="text-xl mr-2">✨</span>
+                              <h5 className="font-medium text-gray-800">Cleanliness</h5>
+                    </div>
+                            <p className="text-gray-700 mt-1">{userProfile.preferences.cleanliness || 'No Preference'}</p>
+                  </div>
+                          <div className="bg-white rounded-lg p-3 border shadow-sm">
+                            <div className="flex items-center mb-1">
+                              <span className="text-xl mr-2">🐾</span>
+                              <h5 className="font-medium text-gray-800">Pets</h5>
+                    </div>
+                            <p className="text-gray-700 mt-1">{userProfile.preferences.pets || 'No Preference'}</p>
+                  </div>
+                          <div className="bg-white rounded-lg p-3 border shadow-sm">
+                            <div className="flex items-center mb-1">
+                              <span className="text-xl mr-2">⏰</span>
+                              <h5 className="font-medium text-gray-800">Schedule</h5>
+                    </div>
+                            <p className="text-gray-700 mt-1">{userProfile.preferences.workSchedule || 'No Preference'}</p>
+                  </div>
+                    </div>
+                  </div>
+                    </div>
+                  ) : (
+                    <div className="text-center py-8">
+                      <div className="bg-blue-100 rounded-full w-20 h-20 flex items-center justify-center mx-auto mb-4">
+                        <span className="text-4xl">⚙️</span>
+                  </div>
+                      <h3 className="text-xl font-semibold text-gray-700 mb-2">No Preferences Set</h3>
+                      <p className="text-gray-500 mb-6 max-w-md mx-auto">You haven't set your roommate preferences yet. Setting preferences helps us find better matches for you.</p>
+              </div>
+                  )}
+              
+                  <div className="mt-6 text-center">
+                <button
+                      onClick={() => setEditingPreferences(true)}
+                      className="px-6 py-3 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-lg hover:shadow-lg transform hover:-translate-y-1 transition-all duration-200"
+                >
+                      {userProfile?.preferences ? 'Update Preferences' : 'Set Preferences'}
+                </button>
+              </div>
+            </div>
+          ) : (
+                <div className="p-6">
+                  <h3 className="text-xl font-semibold mb-4">Edit Your Preferences</h3>
+                  <form onSubmit={async (e) => {
+                    e.preventDefault();
+                    const formData = new FormData(e.target);
+                    
+                    // Create a data object for the textual profile data
+                    const preferencesData = {
+                      minBudget: formData.get('minBudget'),
+                      maxBudget: formData.get('maxBudget'),
+                      genderPreference: formData.get('genderPreference'),
+                      minAge: formData.get('minAge'),
+                      maxAge: formData.get('maxAge'),
+                      area: formData.get('area'),
+                      city: formData.get('city'),
+                      smoking: formData.get('smoking'),
+                      drinking: formData.get('drinking'),
+                      foodPreference: formData.get('foodPreference'),
+                      cleanliness: formData.get('cleanliness'),
+                      pets: formData.get('pets'),
+                      workSchedule: formData.get('workSchedule')
+                    };
+                    
+                    try {
+                      setLoading(true);
+                      
+                      // Then update the preferences data
+                      const response = await axios.post(
+                        `${window.process.env.REACT_APP_BACKEND_URL || 'http://localhost:5002'}/api/user/update-preferences`,
+                        preferencesData,
+                        { headers: { Authorization: `Bearer ${token}` } }
+                      );
+                      
+                      if (response.data.success) {
+                        // Update user preferences with new data
+                        setUserProfile({
+                          ...userProfile,
+                          preferences: preferencesData
+                        });
+                        setEditingPreferences(false);
+                        alert('Preferences updated successfully!');
+                      } else {
+                        alert(response.data.message || 'Failed to update preferences.');
+                      }
+                    } catch (error) {
+                      console.error('Error updating preferences:', error);
+                      alert('Failed to update preferences. Please try again.');
+                    } finally {
+                      setLoading(false);
+                    }
+                  }}>
+                    <div className="grid md:grid-cols-2 gap-6">
+                      <div className="space-y-4">
+                        <div>
+                          <label className="block text-gray-700 mb-1">Min Budget</label>
+                          <input 
+                            type="number" 
+                            name="minBudget"
+                            defaultValue={userProfile?.preferences?.minBudget || ''}
+                            className="w-full p-2 border border-gray-300 rounded"
+                          />
+            </div>
+                        
+                        <div>
+                          <label className="block text-gray-700 mb-1">Max Budget</label>
+                          <input 
+                            type="number" 
+                            name="maxBudget"
+                            defaultValue={userProfile?.preferences?.maxBudget || ''}
+                            className="w-full p-2 border border-gray-300 rounded"
+                          />
+            </div>
+                        
+                        <div>
+                          <label className="block text-gray-700 mb-1">Gender Preference</label>
+                          <select 
+                            name="genderPreference"
+                            defaultValue={userProfile?.preferences?.genderPreference || ''}
+                            className="w-full p-2 border border-gray-300 rounded"
+                          >
+                            <option value="">Any</option>
+                            <option value="Male">Male</option>
+                            <option value="Female">Female</option>
+                            <option value="Non-binary">Non-binary</option>
+                            <option value="Prefer not to say">Prefer not to say</option>
+                          </select>
+              </div>
+                        
+                        <div>
+                          <label className="block text-gray-700 mb-1">Age Range</label>
+                          <input 
+                            type="text" 
+                            name="minAge"
+                            defaultValue={userProfile?.preferences?.minAge || ''}
+                            className="w-full p-2 border border-gray-300 rounded"
+                          />
+            </div>
+                        
+                        <div>
+                          <label className="block text-gray-700 mb-1">Age Range</label>
+                          <input 
+                            type="text" 
+                            name="maxAge"
+                            defaultValue={userProfile?.preferences?.maxAge || ''}
+                            className="w-full p-2 border border-gray-300 rounded"
+                          />
+                            </div>
+                        </div>
+                      
+                      <div className="space-y-4">
+                        <div>
+                          <label className="block text-gray-700 mb-1">Area</label>
+                          <input 
+                            type="text" 
+                            name="area"
+                            defaultValue={userProfile?.preferences?.area || ''}
+                            className="w-full p-2 border border-gray-300 rounded"
+                          />
+                        </div>
+                        
+                        <div>
+                          <label className="block text-gray-700 mb-1">City</label>
+                          <input 
+                            type="text" 
+                            name="city"
+                            defaultValue={userProfile?.preferences?.city || ''}
+                            className="w-full p-2 border border-gray-300 rounded"
+                          />
+                      </div>
+                        
+                        <div>
+                          <label className="block text-gray-700 mb-1">Smoking</label>
+                          <input 
+                            type="text" 
+                            name="smoking"
+                            defaultValue={userProfile?.preferences?.smoking || ''}
+                            className="w-full p-2 border border-gray-300 rounded"
+                          />
+                      </div>
+                        
+                        <div>
+                          <label className="block text-gray-700 mb-1">Drinking</label>
+                          <input 
+                            type="text" 
+                            name="drinking"
+                            defaultValue={userProfile?.preferences?.drinking || ''}
+                            className="w-full p-2 border border-gray-300 rounded"
+                          />
+                  </div>
+
+                      <div>
+                          <label className="block text-gray-700 mb-1">Food</label>
+                          <input 
+                            type="text" 
+                            name="foodPreference"
+                            defaultValue={userProfile?.preferences?.foodPreference || ''}
+                            className="w-full p-2 border border-gray-300 rounded"
+                          />
+                      </div>
+                        
+                      <div>
+                          <label className="block text-gray-700 mb-1">Cleanliness</label>
+                          <input 
+                            type="text" 
+                            name="cleanliness"
+                            defaultValue={userProfile?.preferences?.cleanliness || ''}
+                            className="w-full p-2 border border-gray-300 rounded"
+                          />
+                      </div>
+                        
+                      <div>
+                          <label className="block text-gray-700 mb-1">Pets</label>
+                          <input 
+                            type="text" 
+                            name="pets"
+                            defaultValue={userProfile?.preferences?.pets || ''}
+                            className="w-full p-2 border border-gray-300 rounded"
+                          />
+                      </div>
+                        
+                      <div>
+                          <label className="block text-gray-700 mb-1">Work Schedule</label>
+                          <input 
+                            type="text" 
+                            name="workSchedule"
+                            defaultValue={userProfile?.preferences?.workSchedule || ''}
+                            className="w-full p-2 border border-gray-300 rounded"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-8 flex justify-end space-x-4">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingPreferences(false);
+                        }}
+                        className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={loading}
+                        className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center"
+                      >
+                        {loading ? (
+                          <>
+                            <span className="mr-2 h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                            Saving...
+                          </>
+                        ) : (
+                          'Save Preferences'
+                        )}
+                      </button>
+                    </div>
+                  </form>
+            </div>
+          )}
+        </div>
+        </div>
+      );
+      case 'profile':
+  return (
+          <div className="p-4">
+            <h2 className="text-2xl font-bold mb-4">Your Profile</h2>
+            <div className="bg-gradient-to-r from-blue-500 to-indigo-600 p-6 rounded-t-lg">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-4">
+                  <div className="h-24 w-24 rounded-full bg-white p-1 overflow-hidden">
+                    {userProfile?.profile?.photoUrl ? (
                       <img
-                        src={viewingProfile.profile.photoUrl.startsWith('http')
-                          ? viewingProfile.profile.photoUrl
-                          : `http://localhost:5002${viewingProfile.profile.photoUrl}`}
-                        alt="Profile" 
-                        className="w-full h-full object-cover rounded-full"
+                        src={`${window.process.env.REACT_APP_BACKEND_URL || 'http://localhost:5002'}${userProfile.profile.photoUrl}`} 
+                        alt={userProfile.username}
+                        className="h-full w-full object-cover rounded-full"
                       />
                     ) : (
-                      <div className="w-full h-full flex items-center justify-center rounded-full bg-gray-200">
-                        <span className="text-5xl">👤</span>
+                      <div className="h-full w-full flex items-center justify-center bg-gradient-to-r from-blue-300 to-indigo-300 text-white text-2xl font-bold rounded-full">
+                        {userProfile.username.charAt(0).toUpperCase()}
                       </div>
                     )}
                   </div>
-                  
-                  <h3 className="text-xl font-bold text-center mt-4 text-gray-800">
-                    {viewingProfile.profile?.fullName || viewingProfile.username}
-                  </h3>
-                  
-                  {viewingProfile.profile?.occupation && (
-                    <p className="text-center text-blue-600">{viewingProfile.profile.occupation}</p>
-                  )}
-
-                  <div className="mt-6 text-center">
-                    <button
-                      onClick={() => {
-                        console.log("Sending friend request from modal to:", viewingProfile._id);
-                        handleSendFriendRequest(viewingProfile._id);
-                      }}
-                      className="px-6 py-3 bg-gradient-to-r from-blue-500 to-sky-600 text-white rounded-full font-medium shadow-md hover:from-blue-600 hover:to-sky-700 transition-all"
-                    >
-                      Connect as Roommate
-                    </button>
+                  <div className="text-white">
+                    <h3 className="text-2xl font-bold">{userProfile.username}</h3>
+                    <p className="opacity-90">{userProfile.email}</p>
+                    <div className="flex items-center mt-1">
+                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                        userProfile.isEmailVerified ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'
+                      }`}>
+                        {userProfile.isEmailVerified ? '✓ Email Verified' : '! Email Not Verified'}
+                      </span>
+                      <span className={`ml-2 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                        userProfile.isPhoneVerified ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'
+                      }`}>
+                        {userProfile.isPhoneVerified ? '✓ Phone Verified' : '! Phone Not Verified'}
+                      </span>
+                    </div>
                   </div>
                 </div>
-              </div>
-              
-              {/* Profile Details */}
-              <div className="w-full md:w-2/3 space-y-6">
-                <div className="bg-white p-6 rounded-xl shadow-sm">
-                  <h3 className="text-xl font-semibold mb-6 text-gray-700">Profile Details</h3>
-                  
+                {!editingProfile && (
+                  <button
+                    onClick={() => setEditingProfile(true)}
+                    className="px-4 py-2 bg-white text-indigo-600 rounded-lg shadow-md hover:bg-indigo-50 transition-colors"
+                  >
+                    ✏️ Edit Profile
+                  </button>
+              )}
+            </div>
+          </div>
+            
+            <div className="bg-white p-6 rounded-b-lg shadow-lg mb-6">
+              {editingProfile ? (
+                <form onSubmit={async (e) => {
+                  e.preventDefault();
+                  try {
+                    setLoading(true);
+                    
+                    // Prepare form data
+                    const formData = new FormData();
+                    
+                    // Add photo if selected
+                    if (photoFile) {
+                      formData.append('profileImage', photoFile);
+                    }
+                    
+                    // First upload photo if there is one
+                    let photoUrl = userProfile?.profile?.photoUrl;
+                    
+                    if (photoFile) {
+                      const photoResponse = await axios.post(
+                        `${window.process.env.REACT_APP_BACKEND_URL || 'http://localhost:5002'}/api/user/profile/image`,
+                        formData,
+                        { 
+                          headers: { 
+                            'Authorization': `Bearer ${token}`,
+                            'Content-Type': 'multipart/form-data'
+                          } 
+                        }
+                      );
+                      
+                      if (photoResponse.data && photoResponse.data.photoUrl) {
+                        photoUrl = photoResponse.data.photoUrl;
+                      }
+                    }
+                    
+                    // Now update profile data
+                    const profileData = {
+                      username: profileUsername,
+                      profile: {
+                        fullName: profileFullName,
+                        bio: profileBio,
+                        interests: profileInterests.split(',').map(item => item.trim()),
+                        gender: profileGender,
+                        age: profileAge,
+                        phoneNumber: profilePhone,
+                        location: profileLocation,
+                        photoUrl: photoUrl
+                      }
+                    };
+                    
+                    const response = await axios.put(
+                      `${window.process.env.REACT_APP_BACKEND_URL || 'http://localhost:5002'}/api/user/profile`,
+                      profileData,
+                      { headers: { Authorization: `Bearer ${token}` } }
+                    );
+                    
+                    if (response.data) {
+                      // Update user profile state with the new data
+                      setUserProfile(prevProfile => ({
+                        ...prevProfile,
+                        username: profileUsername,
+                        profile: {
+                          ...prevProfile.profile,
+                          fullName: profileFullName,
+                          bio: profileBio,
+                          interests: profileInterests.split(',').map(item => item.trim()),
+                          gender: profileGender,
+                          age: profileAge,
+                          phoneNumber: profilePhone,
+                          location: profileLocation,
+                          photoUrl: photoUrl || prevProfile.profile?.photoUrl
+                        }
+                      }));
+                      
+                      setEditingProfile(false);
+                      setPhotoFile(null);
+                      setPhotoPreview(null);
+                      
+                      alert('Profile updated successfully!');
+                    }
+                  } catch (error) {
+                    console.error('Error updating profile:', error);
+                    
+                    // Handle specific errors
+                    if (error.response && error.response.data && error.response.data.message) {
+                      alert(`Failed to update profile: ${error.response.data.message}`);
+                    } else {
+                      alert('Failed to update profile. Please try again.');
+                    }
+                  } finally {
+                    setLoading(false);
+                  }
+                }}>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div>
-                      <p className="text-sm text-gray-500">Location</p>
-                      <p className="text-gray-800 font-medium">{viewingProfile.profile?.address || viewingProfile.preferences?.location || 'Not provided'}</p>
-                    </div>
-                    <div>
-                      <p className="text-sm text-gray-500">Looking For</p>
-                      <p className="text-gray-800 font-medium">{viewingProfile.preferences?.gender || 'Any'} Roommate</p>
-                    </div>
-                    <div>
-                      <p className="text-sm text-gray-500">Budget</p>
-                      <p className="text-gray-800 font-medium">
-                        {viewingProfile.preferences?.rent ? `₹ ${viewingProfile.preferences.rent}` : 'Not specified'}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-sm text-gray-500">Occupation</p>
-                      <p className="text-gray-800 font-medium">{viewingProfile.profile?.occupation || 'Not provided'}</p>
-                    </div>
-                    <div className="col-span-2">
-                      <p className="text-sm text-gray-500">Bio</p>
-                      <p className="text-gray-800">{viewingProfile.profile?.bio || 'No bio provided'}</p>
-                    </div>
+                      <h3 className="font-semibold text-lg mb-4 text-gray-700">Personal Information</h3>
+                      
+                      <div className="mb-4">
+                        <label className="block text-gray-700 text-sm font-medium mb-1">Username</label>
+                        <input
+                          type="text"
+                          value={profileUsername}
+                          onChange={(e) => setProfileUsername(e.target.value)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          required
+                        />
+          </div>
+                      
+                      <div className="mb-4">
+                        <label className="block text-gray-700 text-sm font-medium mb-1">Full Name</label>
+                        <input
+                          type="text"
+                          value={profileFullName}
+                          onChange={(e) => setProfileFullName(e.target.value)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                      
+                      <div className="mb-4">
+                        <label className="block text-gray-700 text-sm font-medium mb-1">Gender</label>
+                        <select
+                          value={profileGender}
+                          onChange={(e) => setProfileGender(e.target.value)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        >
+                          <option value="">Select Gender</option>
+                          <option value="Male">Male</option>
+                          <option value="Female">Female</option>
+                          <option value="Non-binary">Non-binary</option>
+                          <option value="Prefer not to say">Prefer not to say</option>
+                        </select>
+                      </div>
+                      
+                      <div className="mb-4">
+                        <label className="block text-gray-700 text-sm font-medium mb-1">Age</label>
+                        <input
+                          type="number"
+                          min="18"
+                          max="99"
+                          value={profileAge}
+                          onChange={(e) => setProfileAge(e.target.value)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                      
+                      <div className="mb-4">
+                        <label className="block text-gray-700 text-sm font-medium mb-1">Phone Number</label>
+                        <input
+                          type="tel"
+                          value={profilePhone}
+                          onChange={(e) => setProfilePhone(e.target.value)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                      
+                      <div className="mb-4">
+                        <label className="block text-gray-700 text-sm font-medium mb-1">Location</label>
+                        <input
+                          type="text"
+                          value={profileLocation}
+                          onChange={(e) => setProfileLocation(e.target.value)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          placeholder="City, State"
+                        />
                   </div>
                 </div>
-                
-                {viewingProfile.preferences && Object.keys(viewingProfile.preferences).length > 0 && (
-                  <div className="bg-white p-6 rounded-xl shadow-sm">
-                    <h3 className="text-xl font-semibold mb-6 text-gray-700">Roommate Preferences</h3>
-                    
-                    <div className="grid grid-cols-2 gap-4">
-                      {viewingProfile.preferences.gender && (
-                        <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
-                          <p className="font-medium text-gray-600">Looking For</p>
-                          <div className="flex items-center mt-2">
-                            <span className="text-2xl mr-2">
-                              {viewingProfile.preferences.gender === 'Male' ? '👨' : 
-                               viewingProfile.preferences.gender === 'Female' ? '👩' : '👥'}
-                            </span>
-                            <p className="text-gray-800 font-medium">{viewingProfile.preferences.gender} Roommate</p>
-                          </div>
-                        </div>
-                      )}
+
+                    <div>
+                      <h3 className="font-semibold text-lg mb-4 text-gray-700">About Me</h3>
                       
-                      {viewingProfile.preferences.rent && (
-                        <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
-                          <p className="font-medium text-gray-600">Rent Budget</p>
-                          <div className="flex items-center mt-2">
-                            <span className="text-2xl mr-2">₹</span>
-                            <p className="text-gray-800 font-medium">{viewingProfile.preferences.rent}</p>
-                          </div>
-                        </div>
-                      )}
+                      <div className="mb-4">
+                        <label className="block text-gray-700 text-sm font-medium mb-1">Profile Photo</label>
+                        <div className="flex items-center space-x-4">
+                          <div className="h-16 w-16 rounded-full bg-gray-200 overflow-hidden">
+                            {photoPreview ? (
+                              <img src={photoPreview} alt="Preview" className="h-full w-full object-cover" />
+                            ) : userProfile?.profile?.photoUrl ? (
+                              <img 
+                                src={`${window.process.env.REACT_APP_BACKEND_URL || 'http://localhost:5002'}${userProfile.profile.photoUrl}`} 
+                                alt={userProfile.username} 
+                                className="h-full w-full object-cover"
+                              />
+                            ) : (
+                              <div className="h-full w-full flex items-center justify-center bg-gray-300 text-white text-xl font-bold">
+                                {profileUsername.charAt(0).toUpperCase()}
+                </div>
+        )}
+      </div>
+                          <label className="px-4 py-2 bg-blue-50 text-blue-600 rounded-md cursor-pointer hover:bg-blue-100 transition-colors">
+                            Choose Photo
+                            <input
+                              type="file"
+                              accept="image/*"
+                              className="hidden"
+                              onChange={handlePhotoChange}
+                            />
+                          </label>
+          </div>
+        </div>
                       
-                      {viewingProfile.preferences.cleanliness && (
-                        <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
-                          <p className="font-medium text-gray-600">Cleanliness</p>
-                          <div className="flex items-center mt-2">
-                            <span className="text-2xl mr-2">✨</span>
-                            <p className="text-gray-800 font-medium">{viewingProfile.preferences.cleanliness}</p>
-                          </div>
-                        </div>
-                      )}
-                      
-                      {viewingProfile.preferences.smoking && (
-                        <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
-                          <p className="font-medium text-gray-600">Smoking</p>
-                          <div className="flex items-center mt-2">
-                            <span className="text-2xl mr-2">🚭</span>
-                            <p className="text-gray-800 font-medium">{viewingProfile.preferences.smoking}</p>
-                          </div>
-                        </div>
-                      )}
-                      
-                      {viewingProfile.preferences.pets && (
-                        <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
-                          <p className="font-medium text-gray-600">Pets</p>
-                          <div className="flex items-center mt-2">
-                            <span className="text-2xl mr-2">🐾</span>
-                            <p className="text-gray-800 font-medium">{viewingProfile.preferences.pets}</p>
-                          </div>
-                        </div>
-                      )}
-                      
-                      {viewingProfile.preferences.workSchedule && (
-                        <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
-                          <p className="font-medium text-gray-600">Work Schedule</p>
-                          <div className="flex items-center mt-2">
-                            <span className="text-2xl mr-2">⏱️</span>
-                            <p className="text-gray-800 font-medium">{viewingProfile.preferences.workSchedule}</p>
-                          </div>
-                        </div>
-                      )}
-                      
-                      {viewingProfile.preferences.socialLevel && (
-                        <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
-                          <p className="font-medium text-gray-600">Social Level</p>
-                          <div className="flex items-center mt-2">
-                            <span className="text-2xl mr-2">👥</span>
-                            <p className="text-gray-800 font-medium">{viewingProfile.preferences.socialLevel}</p>
-                          </div>
-                        </div>
-                      )}
-                      
-                      {viewingProfile.preferences.guestPreference && (
-                        <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
-                          <p className="font-medium text-gray-600">Guest Policy</p>
-                          <div className="flex items-center mt-2">
-                            <span className="text-2xl mr-2">👋</span>
-                            <p className="text-gray-800 font-medium">{viewingProfile.preferences.guestPreference}</p>
-                          </div>
-                        </div>
-                      )}
-                      
-                      {viewingProfile.preferences.music && (
-                        <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
-                          <p className="font-medium text-gray-600">Music/Noise</p>
-                          <div className="flex items-center mt-2">
-                            <span className="text-2xl mr-2">🎵</span>
-                            <p className="text-gray-800 font-medium">{viewingProfile.preferences.music}</p>
-                          </div>
-                        </div>
-                      )}
+                      <div className="mb-4">
+                        <label className="block text-gray-700 text-sm font-medium mb-1">Bio</label>
+                        <textarea
+                          value={profileBio}
+                          onChange={(e) => setProfileBio(e.target.value)}
+                          rows="4"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          placeholder="Tell others about yourself..."
+                        ></textarea>
+            </div>
+            
+                      <div className="mb-4">
+                        <label className="block text-gray-700 text-sm font-medium mb-1">Interests (comma separated)</label>
+                        <input
+                          type="text"
+                          value={profileInterests}
+                          onChange={(e) => setProfileInterests(e.target.value)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          placeholder="Reading, Hiking, Cooking, etc."
+                        />
+                      </div>
                     </div>
                   </div>
-                )}
+                  
+                  <div className="mt-6 flex justify-end space-x-4">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingProfile(false);
+                        setPhotoFile(null);
+                        setPhotoPreview(null);
+                        // Reset form fields to current profile values
+                        initializeProfileForm();
+                      }}
+                      className="px-4 py-2 border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 transition-colors"
+                      disabled={loading}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-4 py-2 bg-gradient-to-r from-blue-500 to-indigo-600 text-white rounded-md hover:from-blue-600 hover:to-indigo-700 transition-colors shadow-md"
+                      disabled={loading}
+                    >
+                      {loading ? (
+                        <div className="flex items-center">
+                          <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2"></div>
+                          Saving...
+                  </div>
+                      ) : (
+                        'Save Profile'
+                      )}
+                    </button>
+                </div>
+                </form>
+              ) : (
+                <div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                      <h3 className="font-semibold text-lg mb-4 text-gray-700">Personal Information</h3>
+                      <table className="w-full">
+                        <tbody>
+                          <tr>
+                            <td className="pb-2 pr-4 text-gray-500 font-medium">Full Name:</td>
+                            <td className="pb-2">{userProfile?.profile?.fullName || 'Not set'}</td>
+                          </tr>
+                          <tr>
+                            <td className="pb-2 pr-4 text-gray-500 font-medium">Gender:</td>
+                            <td className="pb-2">{userProfile?.profile?.gender || 'Not set'}</td>
+                          </tr>
+                          <tr>
+                            <td className="pb-2 pr-4 text-gray-500 font-medium">Age:</td>
+                            <td className="pb-2">{userProfile?.profile?.age || 'Not set'}</td>
+                          </tr>
+                          <tr>
+                            <td className="pb-2 pr-4 text-gray-500 font-medium">Phone:</td>
+                            <td className="pb-2">{userProfile?.phoneNumber || 'Not set'}</td>
+                          </tr>
+                          <tr>
+                            <td className="pb-2 pr-4 text-gray-500 font-medium">Location:</td>
+                            <td className="pb-2">{userProfile?.profile?.location || userProfile?.preferences?.location || 'Not set'}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    
+                    <div>
+                      <h3 className="font-semibold text-lg mb-4 text-gray-700">About Me</h3>
+                      <div className="mb-4">
+                        <h4 className="text-gray-500 font-medium mb-1">Bio</h4>
+                        <p className="text-gray-800">{userProfile?.profile?.bio || 'No bio provided yet.'}</p>
+                </div>
+                
+                      <div>
+                        <h4 className="text-gray-500 font-medium mb-2">Interests</h4>
+                        {userProfile?.profile?.interests && userProfile.profile.interests.length > 0 ? (
+                          <div className="flex flex-wrap gap-2">
+                            {userProfile.profile.interests.map((interest, index) => (
+                            <span 
+                                key={index} 
+                                className="px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-sm"
+                              >
+                                {interest}
+                            </span>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-gray-600">No interests added yet.</p>
+                        )}
+                          </div>
+                        </div>
+                          </div>
+                        </div>
+                      )}
+                          </div>
+                        </div>
+        );
+      default:
+        return (
+          <div className="text-center py-12 bg-white rounded-lg shadow-sm">
+            <h3 className="text-xl font-semibold text-gray-700 mb-2">Select a tab</h3>
+            <p className="text-gray-500">Choose a tab from the navigation menu above.</p>
+                          </div>
+        );
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-100 flex flex-col">
+      {/* Header */}
+      <header className="bg-white shadow-sm py-4 px-6">
+        <div className="container mx-auto flex justify-between items-center">
+          <div className="flex items-center">
+            <h1 className="text-2xl font-bold text-gray-800">
+              <span className="text-blue-500">Roommate</span>
+              <span className="text-gray-700">Finder</span>
+              <sup className="text-xs">®</sup>
+            </h1>
+                          </div>
+          <div className="flex items-center space-x-4">
+            <button 
+              className="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-full flex items-center"
+              onClick={() => setActiveTab('matches')}
+            >
+              <span className="mr-1">+</span> Add Listing
+            </button>
+            <div className="relative">
+              <img 
+                src={userProfile?.profileImage ? 
+                  userProfile.profileImage : 
+                  `https://ui-avatars.com/api/?name=${userProfile?.username || 'User'}&background=0D8ABC&color=fff`} 
+                alt="Profile" 
+                className="w-10 h-10 rounded-full cursor-pointer border-2 border-white shadow-sm"
+                onClick={() => setActiveTab('profile')}
+              />
+                        </div>
+                          </div>
+                        </div>
+      </header>
+
+      {/* Tab Navigation */}
+      <div className="bg-white border-b">
+        <div className="container mx-auto">
+          <nav className="flex justify-between items-center">
+            <div className="flex">
+              <button
+                onClick={() => setActiveTab('dashboard')}
+                className={`px-6 py-4 font-medium flex items-center ${
+                  activeTab === 'dashboard' ? 'text-blue-600 border-b-2 border-blue-500' : 'text-gray-500'
+                }`}
+              >
+                <span className="mr-2 text-xl">🏠</span>
+                Dashboard
+              </button>
+              <button
+                onClick={() => setActiveTab('matches')}
+                className={`px-6 py-4 font-medium flex items-center ${
+                  activeTab === 'matches' ? 'text-blue-600 border-b-2 border-blue-500' : 'text-gray-500'
+                }`}
+              >
+                <span className="mr-2 text-xl">❤️</span>
+                Matches
+              </button>
+              <button
+                onClick={() => setActiveTab('connections')}
+                className={`px-6 py-4 font-medium flex items-center ${
+                  activeTab === 'connections' ? 'text-blue-600 border-b-2 border-blue-500' : 'text-gray-500'
+                }`}
+              >
+                <span className="mr-2 text-xl">👥</span>
+                Connections
+              </button>
+              <button
+                onClick={() => setActiveTab('messages')}
+                className={`px-6 py-4 font-medium flex items-center ${
+                  activeTab === 'messages' ? 'text-blue-600 border-b-2 border-blue-500' : 'text-gray-500'
+                }`}
+              >
+                <span className="mr-2 text-xl">💬</span>
+                Messages
+              </button>
+              <button
+                onClick={() => setActiveTab('preferences')}
+                className={`px-6 py-4 font-medium flex items-center ${
+                  activeTab === 'preferences' ? 'text-blue-600 border-b-2 border-blue-500' : 'text-gray-500'
+                }`}
+              >
+                <span className="mr-2 text-xl">⚙️</span>
+                Preferences
+              </button>
+              <button
+                onClick={() => setActiveTab('profile')}
+                className={`px-6 py-4 font-medium flex items-center ${
+                  activeTab === 'profile' ? 'text-blue-600 border-b-2 border-blue-500' : 'text-gray-500'
+                }`}
+              >
+                <span className="mr-2 text-xl">👤</span>
+                Profile
+              </button>
+                          </div>
+            <button
+              onClick={handleLogout}
+              className="px-6 py-4 font-medium flex items-center text-red-500 hover:text-red-600"
+            >
+              <span className="mr-2 text-xl">🚪</span>
+              Logout
+            </button>
+          </nav>
+                        </div>
+      </div>
+
+      {/* Search Bar */}
+      <div className="container mx-auto px-6 py-4">
+        <div className="flex items-center">
+          <div className="flex-grow">
+            <div className="flex border border-blue-200 rounded-lg overflow-hidden shadow-sm">
+              <div className="bg-white px-4 py-2 flex items-center text-gray-600 border-r border-blue-100">
+                <span className="material-icons-outlined text-blue-400">location_on</span>
+                <input 
+                  type="text" 
+                  placeholder="Greater Noida, Uttar Pradesh, India" 
+                  className="ml-2 outline-none w-64"
+                />
+                          </div>
+              <div className="bg-white px-4 py-2 flex items-center">
+                <span className="material-icons-outlined text-blue-400">search</span>
+                <input 
+                  type="text" 
+                  placeholder="Search..." 
+                  className="ml-2 outline-none w-40"
+                />
+                        </div>
+                    </div>
+                  </div>
+          <div className="ml-4">
+            <button className="bg-white px-4 py-2 rounded-lg border border-blue-200 shadow-sm flex items-center">
+              <span>All</span>
+              <span className="material-icons-outlined ml-1 text-blue-500">expand_more</span>
+            </button>
               </div>
             </div>
           </div>
+
+      {/* Slogan */}
+      <div className="container mx-auto px-6 py-2 text-gray-700">
+        <p>You can make team & find roommates together <button className="text-blue-600 font-medium">Create Team</button></p>
         </div>
-      )}
+
+      {/* Main Content - Use a lighter background */}
+      <div className="container mx-auto px-6 py-4 flex-grow bg-blue-50 rounded-lg">
+        {renderContent()}
+      </div>
     </div>
   );
 };

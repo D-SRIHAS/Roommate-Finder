@@ -138,28 +138,54 @@ const Profile = () => {
         formDataToSend.append('photo', photo);
       }
       
-      // Try the /api/user/profile endpoint first (more detailed one)
+      // Attempt to update profile using the user route first
       let response;
       try {
+        console.log('Attempting to update profile using /api/user/profile endpoint');
         response = await axios.put('http://localhost:5002/api/user/profile', formDataToSend, {
           headers: {
             'Authorization': `Bearer ${token}`,
             'Content-Type': 'multipart/form-data'
           }
         });
-        console.log('Profile updated using /api/user/profile endpoint');
+        console.log('Profile updated successfully using /api/user/profile endpoint');
       } catch (userProfileErr) {
         console.error('Error with /api/user/profile endpoint:', userProfileErr);
         
-        // Fall back to /api/profile endpoint
+        // If the first attempt fails, try the profile route
         try {
-          response = await axios.put('http://localhost:5002/api/profile', formDataToSend, {
+          console.log('Falling back to /api/profile endpoint');
+          // For the /api/profile endpoint, it expects a different structure
+          const profileFormData = new FormData();
+          profileFormData.append('profile', JSON.stringify(profileData));
+          
+          if (photo) {
+            // For this endpoint, upload photo separately
+            const photoFormData = new FormData();
+            photoFormData.append('photo', photo);
+            
+            try {
+              await axios.post('http://localhost:5002/api/profile/photo', photoFormData, {
+                headers: {
+                  'Authorization': `Bearer ${token}`,
+                  'Content-Type': 'multipart/form-data'
+                }
+              });
+              console.log('Photo uploaded successfully using /api/profile/photo endpoint');
+            } catch (photoErr) {
+              console.error('Error uploading photo:', photoErr);
+            }
+          }
+          
+          response = await axios.put('http://localhost:5002/api/profile', {
+            profile: profileData
+          }, {
             headers: {
               'Authorization': `Bearer ${token}`,
-              'Content-Type': 'multipart/form-data'
+              'Content-Type': 'application/json'
             }
           });
-          console.log('Profile updated using /api/profile endpoint');
+          console.log('Profile updated successfully using /api/profile endpoint');
         } catch (profileErr) {
           console.error('Error with /api/profile endpoint:', profileErr);
           throw profileErr; // Re-throw the error from the second attempt

@@ -2,6 +2,11 @@
 
 # Script to start both frontend and backend servers
 
+# Kill any existing processes
+echo "Stopping any existing server processes..."
+pkill -f "node.*start" || true
+pkill -f "node.*server.js" || true
+
 # Print helper message
 echo "Starting Roommate Finder servers..."
 

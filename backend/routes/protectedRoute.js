@@ -1,10 +1,10 @@
 const express = require("express");
-const authMiddleware = require("../middleware/authMiddleware");
+const { authenticateJWT } = require("../middleware/auth");
 
 const router = express.Router();
 
 // ✅ Protected Route
-router.get("/", authMiddleware, (req, res) => {
+router.get("/", authenticateJWT, (req, res) => {
   try {
     res.json({ message: "🔒 You have accessed a protected route!", user: req.user });
   } catch (error) {

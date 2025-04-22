@@ -7,21 +7,28 @@ const fs = require('fs');
 const http = require('http');
 const { Server } = require('socket.io');
 const jwt = require('jsonwebtoken');
+const { authenticateJWT } = require('./middleware/auth');
 
 // Load environment variables first
 dotenv.config();
+
+// Import User model
+const User = require('./models/User');
 
 // Then create Express app and server
 const app = express();
 const server = http.createServer(app);
 
+// Middleware
+app.use(cors());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+app.use(express.static('public'));
+
 // Initialize MongoDB connection
-mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/roommate-finder')
+mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/roommate-finder')
   .then(() => {
     console.log("✅ MongoDB connected");
-    
-    // Only import models after MongoDB is connected
-    const User = require('./models/User');
     
     // Create Socket.io server with CORS configuration
     const io = new Server(server, {
@@ -288,28 +295,19 @@ mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/roommate-fi
   })
   .catch(err => console.error("❌ MongoDB connection error:", err));
 
-// Remove these route imports
-const authRoutes = require("./routes/auth");
-const protectedRoutes = require("./routes/protectedRoute");
-const userRoutes = require("./routes/user");
-const profileRoutes = require('./routes/profile');
-const authenticateSocket = require('./middleware/authenticateSocket');
-const phoneVerificationRoutes = require('./routes/phoneVerification');
-
-// Middleware
-app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-app.use(express.static('public'));
-
-// Routes - Move inside the MongoDB connection success block
+// Routes
 app.use("/api/auth", require("./routes/auth"));
 app.use("/api/protected", require("./routes/protectedRoute"));
 app.use("/api/user", require("./routes/user"));
 app.use('/api/profile', require('./routes/profile'));
-app.use('/api/phone-verification', require('./routes/phoneVerification'));
 
-// Serve static files from uploads folder
+// Ensure uploads directory exists
+const uploadDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadDir)) {
+  console.log('Creating uploads directory:', uploadDir);
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Debug route to check uploads directory
@@ -351,7 +349,39 @@ app.use((req, res) => {
   res.status(404).json({ message: "❌ Route Not Found" });
 });
 
+// This section handles user updating their preferences
+app.post('/api/user/preferences', authenticateJWT, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { preferences } = req.body;
+    
+    if (!preferences) {
+      return res.status(400).json({ message: 'No preferences provided' });
+    }
+    
+    // Find and update the user
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+    
+    // Update preferences
+    user.preferences = { ...user.preferences, ...preferences };
+    await user.save();
+    
+    return res.status(200).json({ 
+      success: true,
+      message: 'Preferences updated successfully',
+      preferences: user.preferences
+    });
+  } catch (error) {
+    console.error('Error in preferences update:', error);
+    return res.status(500).json({ message: 'Server error updating preferences' });
+  }
+});
+
 // Start the server
-server.listen(process.env.PORT || 5002, () => {
-  console.log(`🚀 Backend is running on port ${process.env.PORT || 5002}`);
+const PORT = process.env.PORT || 5002;
+server.listen(PORT, () => {
+  console.log(`🚀 Backend is running on port ${PORT}`);
 });

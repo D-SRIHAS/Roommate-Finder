@@ -382,4 +382,57 @@ exports.verifyEmailToken = async (req, res) => {
       error: error.message 
     });
   }
+};
+
+// Login user
+exports.login = async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    
+    // Validate input
+    if (!email || !password) {
+      return res.status(400).json({ message: 'Please provide email and password' });
+    }
+    
+    console.log(`Attempting login for email: ${email}`);
+    
+    // Find user
+    const user = await User.findOne({ email });
+    if (!user) {
+      console.log(`Login failed: No user found with email ${email}`);
+      return res.status(400).json({ message: 'Invalid credentials' });
+    }
+    
+    // Check password
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      console.log(`Login failed: Password mismatch for ${email}`);
+      return res.status(400).json({ message: 'Invalid credentials' });
+    }
+    
+    console.log(`Login successful for user: ${email}`);
+    
+    // Generate JWT
+    const token = jwt.sign(
+      { userId: user._id },
+      process.env.JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+    
+    // Return user data and token
+    res.json({
+      token,
+      user: {
+        _id: user._id,
+        email: user.email,
+        name: user.name,
+        emailVerified: user.emailVerified,
+        isPhoneVerified: user.isPhoneVerified,
+        phoneNumber: user.phoneNumber
+      }
+    });
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ message: 'Server error during login' });
+  }
 }; 

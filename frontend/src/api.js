@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5005/api';
+const API_URL = `${window.process.env.REACT_APP_BACKEND_URL || 'http://localhost:5002'}/api`;
 
 // API service for email verification
 const api = {

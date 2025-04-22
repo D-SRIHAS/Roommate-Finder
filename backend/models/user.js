@@ -30,63 +30,21 @@ const userSchema = new mongoose.Schema({
     unique: true,
     trim: true
   },
-  isEmailVerified: {
-    type: Boolean,
-    default: false
-  },
-  isPhoneVerified: {
-    type: Boolean,
-    default: false
-  },
-  phoneVerificationOTP: {
-    code: String,
-    expiresAt: Date
-  },
   emailVerificationOTP: {
     code: String,
     expiresAt: Date
   },
   preferences: {
-    location: {
-      type: String,
-      enum: ['Mumbai', 'Delhi', 'Bangalore', 'Hyderabad', 'Chennai', 'Kolkata', 'Pune', 'Ahmedabad', 'Jaipur', 'Surat', 'Other'],
-      default: null,
-    },
-    cleanliness: {
-      type: String,
-      enum: ['Very Clean', 'Moderately Clean', 'Somewhat Messy', 'Messy'],
-      default: null,
-    },
-    smoking: {
-      type: String,
-      enum: ['No Smoking', 'Outside Only', 'Smoking Friendly'],
-      default: null,
-    },
-    pets: {
-      type: String,
-      enum: ['No Pets', 'Pet Friendly', 'Has Pets'],
-      default: null,
-    },
-    workSchedule: {
-      type: String,
-      enum: ['Regular Hours', 'Flexible Hours', 'Night Owl'],
-      default: null,
-    },
-    socialLevel: {
-      type: String,
-      enum: ['Very Social', 'Moderately Social', 'Occasionally Social', 'Not Social'],
-      default: null,
-    },
-    guestPreference: {
-      type: String,
-      enum: ['Frequent Guests', 'Occasional Guests', 'Rare Guests', 'No Guests'],
-      default: null,
-    },
-    music: {
-      type: String,
-      enum: ['Shared Music OK', 'With Headphones', 'Quiet Environment'],
-      default: null,
-    },
+    location: { type: String, default: null },
+    gender: { type: String, enum: ['Male', 'Female', 'Any'], default: null },
+    rent: { type: String, default: null },
+    cleanliness: { type: String, enum: ['Very Clean', 'Moderately Clean', 'Somewhat Messy', 'Messy'], default: null },
+    smoking: { type: String, enum: ['No Smoking', 'Outside Only', 'Smoking Friendly'], default: null },
+    pets: { type: String, enum: ['No Pets', 'Pet Friendly', 'Has Pets'], default: null },
+    workSchedule: { type: String, enum: ['Regular Hours', 'Flexible Hours', 'Night Owl'], default: null },
+    socialLevel: { type: String, enum: ['Very Social', 'Moderately Social', 'Occasionally Social', 'Not Social'], default: null },
+    guestPreference: { type: String, enum: ['Frequent Guests', 'Occasional Guests', 'Rare Guests', 'No Guests'], default: null },
+    music: { type: String, enum: ['Shared Music OK', 'With Headphones', 'Quiet Environment'], default: null }
   },
   profile: {
     fullName: {
@@ -98,10 +56,6 @@ const userSchema = new mongoose.Schema({
       default: "",
     },
     address: {
-      type: String,
-      default: "",
-    },
-    phone: {
       type: String,
       default: "",
     },
@@ -117,6 +71,10 @@ const userSchema = new mongoose.Schema({
   profileCompleted: {
     type: Boolean,
     default: false,
+  },
+  isNewSignup: {
+    type: Boolean,
+    default: true,
   },
   friends: [{
     type: mongoose.Schema.Types.ObjectId,
@@ -136,32 +94,6 @@ const userSchema = new mongoose.Schema({
     createdAt: {
       type: Date,
       default: Date.now
-    },
-    fromUserData: {
-      username: {
-        type: String
-      },
-      fullName: {
-        type: String
-      },
-      photoUrl: {
-        type: String
-      },
-      bio: {
-        type: String
-      },
-      address: {
-        type: String
-      },
-      phone: {
-        type: String
-      },
-      occupation: {
-        type: String
-      },
-      emailVerified: {
-        type: Boolean
-      }
     }
   }],
   messages: [{
@@ -196,12 +128,8 @@ const userSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Add email index with unique constraint
-userSchema.index({ email: 1 }, { unique: true });
-
 // Hash password before saving
 userSchema.pre('save', async function(next) {
-  // If validateBeforeSave is set to false, it means we're manually handling the password
   if (this._skipValidation || !this.isModified('password')) {
     return next();
   }
@@ -231,6 +159,4 @@ userSchema.methods.comparePassword = async function (candidatePassword) {
   }
 };
 
-const User = mongoose.model("User", userSchema);
-
-module.exports = User; 
+module.exports = mongoose.model("User", userSchema); 

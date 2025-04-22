@@ -1,26 +1,58 @@
-import { Routes, Route, useNavigate } from "react-router-dom";
-import React, { useEffect } from "react";
+import { Routes, Route, useNavigate, Navigate } from "react-router-dom";
+import React, { useEffect, useState, useCallback } from "react";
 import { io } from "socket.io-client";
 import Login from "./pages/Login";
 import Signup from "./pages/Signup";
 import Dashboard from "./pages/Dashboard";
 import Profile from "./pages/Profile";
 import EmailVerification from "./pages/EmailVerification";
-import PhoneVerification from './pages/PhoneVerification';
+import PreferenceFormPage from './pages/PreferenceFormPage';
+import About from './pages/About';
+
+// Private route component to protect routes
+const PrivateRoute = ({ children }) => {
+  const [isAuthenticated, setIsAuthenticated] = useState(null);
+  
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    setIsAuthenticated(!!token);
+  }, []);
+
+  if (isAuthenticated === null) {
+    // Still checking authentication
+    return <div>Loading...</div>;
+  }
+  
+  if (!isAuthenticated) {
+    console.log("No token found, redirecting to login");
+    return <Navigate to="/login" replace />;
+  }
+  
+  return children;
+};
 
 function App() {
   const navigate = useNavigate();
+  const [isLoading, setIsLoading] = useState(true);
 
+  // Initialize app state
   useEffect(() => {
+    setIsLoading(false);
+  }, []);
+
+  // Setup socket connection
+  const setupSocket = useCallback(() => {
     // Socket.io connection with error handling
     const token = localStorage.getItem('token');
-    if (!token) return; // Don't connect if no token
-    
-    let socket = null;
+    if (!token) return null; // Don't connect if no token
     
     try {
+      // Get socket URL from window.process.env
+      const socketUrl = window.process.env.REACT_APP_SOCKET_URL || 'http://localhost:5002';
+      console.log("Using socket URL:", socketUrl);
+      
       // Connect using Socket.io instead of raw WebSocket
-      socket = io('http://localhost:5002', {
+      const socket = io(socketUrl, {
         auth: { token },
         reconnection: true,
         reconnectionAttempts: 5,
@@ -66,17 +98,29 @@ function App() {
           console.error('Error handling socket message:', error);
         }
       });
+      
+      return socket;
     } catch (error) {
       console.error('Error setting up Socket.io:', error);
+      return null;
     }
+  }, [navigate]);
 
+  // Set up socket when component mounts
+  useEffect(() => {
+    const socket = setupSocket();
+    
     // Clean up on component unmount
     return () => {
       if (socket) {
         socket.disconnect();
       }
     };
-  }, [navigate]);
+  }, [setupSocket]);
+
+  if (isLoading) {
+    return <div>Loading...</div>;
+  }
 
   return (
     <>
@@ -84,11 +128,33 @@ function App() {
         <Route path="/" element={<Signup />} />
         <Route path="/signup" element={<Signup />} />
         <Route path="/login" element={<Login />} />
-        <Route path="/dashboard" element={<Dashboard />} />
-        <Route path="/profile" element={<Profile />} />
+        <Route path="/about" element={<About />} />
+        <Route 
+          path="/dashboard" 
+          element={
+            <PrivateRoute>
+              <Dashboard />
+            </PrivateRoute>
+          } 
+        />
+        <Route 
+          path="/profile" 
+          element={
+            <PrivateRoute>
+              <Profile />
+            </PrivateRoute>
+          } 
+        />
         <Route path="/verify-email" element={<EmailVerification />} />
         <Route path="/verify-email-token" element={<EmailVerification />} />
-        <Route path="/phone-verification" element={<PhoneVerification />} />
+        <Route 
+          path="/preference-form" 
+          element={
+            <PrivateRoute>
+              <PreferenceFormPage />
+            </PrivateRoute>
+          } 
+        />
       </Routes>
     </>
   );

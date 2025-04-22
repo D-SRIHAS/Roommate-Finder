@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const User = require("../models/User");
-const { authenticateJWT } = require("../middleware/authMiddleware");
+const { authenticateJWT } = require("../middleware/auth");
 const verificationMiddleware = require("../middleware/verificationMiddleware");
 const multer = require('multer');
 const fs = require('fs');
@@ -130,39 +130,41 @@ router.route('/profile')
         return res.status(404).json({ message: "User not found" });
       }
 
+      // This section processes the friend requests to include additional data
       if (user.friendRequests && user.friendRequests.length > 0) {
-        user.friendRequests = user.friendRequests.map(request => {
-          // Return fromUserData if available, otherwise fallback to populated from field
-          // This ensures compatibility with both old and new request formats
-          const fromUserData = request.fromUserData || {
-            username: request.from.username,
-            fullName: request.from.profile?.fullName || '',
-            photoUrl: request.from.profile?.photoUrl || null,
-            bio: request.from.profile?.bio || '',
-            address: request.from.profile?.address || '',
-            phone: request.from.profile?.phone || '',
-            occupation: request.from.profile?.occupation || '',
-            emailVerified: request.from.emailVerified || false
-          };
+        const populatedRequests = await Promise.all(user.friendRequests.map(async (request) => {
+          // Add a null check to prevent TypeError when 'from' is null
+          if (!request.from) {
+            return {
+              ...request.toObject(),
+              fromUser: null
+            };
+          }
           
-          return {
-            _id: request._id,
-            from: request.from._id,
-            status: request.status,
-            createdAt: request.createdAt,
-            fromUser: {
-              username: request.from.username,
-              fullName: request.from.profile?.fullName || '',
-              photoUrl: request.from.profile?.photoUrl || null,
-              bio: request.from.profile?.bio || '',
-              address: request.from.profile?.address || '',
-              phone: request.from.profile?.phone || '',
-              occupation: request.from.profile?.occupation || '',
-              emailVerified: request.from.emailVerified || false
-            },
-            fromUserData: fromUserData
-          };
-        });
+          try {
+            const fromUser = await User.findById(request.from).select('username profile');
+            return {
+              ...request.toObject(),
+              fromUser: fromUser ? {
+                _id: fromUser._id,
+                username: fromUser.username,
+                fullName: fromUser.profile?.fullName,
+                photoUrl: fromUser.profile?.photoUrl,
+                occupation: fromUser.profile?.occupation,
+                address: fromUser.profile?.address
+              } : null
+            };
+          } catch (err) {
+            console.error('Error fetching friend request sender:', err);
+            return {
+              ...request.toObject(),
+              fromUser: null
+            };
+          }
+        }));
+        
+        // Replace the friend requests with the populated ones
+        user.friendRequests = populatedRequests;
       }
 
       console.log("✅ Sending profile data");
@@ -265,189 +267,85 @@ router.post("/preferences", authenticateJWT, async (req, res) => {
   }
 });
 
-// Get matches with profile information
+// Get potential matches based on preferences
 router.get('/matches', authenticateJWT, async (req, res) => {
   try {
     const userId = req.user.userId;
-    console.log("📩 Matches request received for user:", userId);
     
-    const currentUser = await User.findById(userId);
-    
-    if (!currentUser.preferences || !currentUser.profileCompleted) {
-      console.log("❌ User has not completed profile or preferences");
-      return res.status(400).json({ message: "Please complete your preferences first" });
+    // Find the current user with their preferences
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
     }
     
-    // Geocode current user's location
-    let currentUserCoords = null;
-    if (currentUser.profile && currentUser.profile.address) {
-      currentUserCoords = await geocodeAddress(currentUser.profile.address);
-      console.log(`Using profile address for geocoding: ${currentUser.profile.address}`);
-    } else if (currentUser.preferences && currentUser.preferences.location) {
-      currentUserCoords = await geocodeAddress(currentUser.preferences.location);
-      console.log(`Using preference location for geocoding: ${currentUser.preferences.location}`);
+    // Check if user has completed profile and preferences
+    if (!user.profileCompleted || !user.preferences) {
+      return res.status(400).json({ message: "Please complete your profile and preferences first" });
     }
     
-    console.log("Current user coordinates:", currentUserCoords);
+    // Build match query
+    const matchQuery = {
+      _id: { $ne: userId }, // Exclude current user
+      profileCompleted: true,
+      preferences: { $exists: true }
+    };
     
-    // Find all users except current user who have completed their profiles
-    const potentialMatches = await User.find({
-      _id: { $ne: userId },
-      profileCompleted: true
-    });
-    
-    console.log(`📊 Found ${potentialMatches.length} potential matches`);
-    
-    // Separate location-based matches and other matches
-    const locationMatches = [];
-    const otherMatches = [];
-    
-    for (const user of potentialMatches) {
-      console.log(`Processing match with user: ${user.username}`);
-
-      // Set default numerical values for categories based on preference values
-      const numericalPrefs = {
-        // Cleanliness: Very Clean (4), Moderately Clean (3), Somewhat Messy (2), Messy (1)
-        cleanliness: { 'Very Clean': 4, 'Moderately Clean': 3, 'Somewhat Messy': 2, 'Messy': 1 },
-        // Smoking: No Smoking (1), Outside Only (2), Smoking Friendly (3)
-        smoking: { 'No Smoking': 1, 'Outside Only': 2, 'Smoking Friendly': 3 },
-        // Pets: No Pets (1), Pet Friendly (2), Has Pets (3)
-        pets: { 'No Pets': 1, 'Pet Friendly': 2, 'Has Pets': 3 },
-        // Work Schedule: Regular Hours (1), Flexible Hours (2), Night Owl (3)
-        workSchedule: { 'Regular Hours': 1, 'Flexible Hours': 2, 'Night Owl': 3 },
-        // Social Level: Very Social (4), Moderately Social (3), Occasionally Social (2), Not Social (1)
-        socialLevel: { 'Very Social': 4, 'Moderately Social': 3, 'Occasionally Social': 2, 'Not Social': 1 },
-        // Guest Preference: Frequent Guests (4), Occasional Guests (3), Rare Guests (2), No Guests (1)
-        guestPreference: { 'Frequent Guests': 4, 'Occasional Guests': 3, 'Rare Guests': 2, 'No Guests': 1 },
-        // Music: Shared Music OK (3), With Headphones (2), Quiet Environment (1)
-        music: { 'Shared Music OK': 3, 'With Headphones': 2, 'Quiet Environment': 1 }
-      };
-      
-      // Track similarities
-      let similarityScore = 0;
-      let maxPossibleScore = 0;
-      
-      // Check for location match first
-      const isLocationMatch = 
-        currentUser.preferences.location && 
-        user.preferences.location && 
-        currentUser.preferences.location === user.preferences.location;
-      
-      console.log(`Location match check: current=${currentUser.preferences.location}, match=${user.preferences.location}, isMatch=${isLocationMatch}`);
-      
-      // Calculate distance if coordinates are available
-      let distance = null;
-      if (currentUserCoords) {
-        // Get coordinates for the potential match
-        let matchCoords = null;
-        if (user.profile && user.profile.address) {
-          matchCoords = await geocodeAddress(user.profile.address);
-          console.log(`Using profile address for match: ${user.profile.address}`);
-        } else if (user.preferences && user.preferences.location) {
-          matchCoords = await geocodeAddress(user.preferences.location);
-          console.log(`Using preference location for match: ${user.preferences.location}`);
-        }
-        
-        if (matchCoords) {
-          distance = calculateDistance(
-            currentUserCoords.lat, currentUserCoords.lng, 
-            matchCoords.lat, matchCoords.lng
-          );
-          console.log(`Distance calculation: ${distance} km between ${currentUser.username} and ${user.username}`);
-        } else {
-          console.log(`Could not get coordinates for user: ${user.username}`);
-        }
-      } else {
-        console.log(`Could not get coordinates for current user: ${currentUser.username}`);
-      }
-      
-      // Calculate similarity for each preference category
-      for (const category in numericalPrefs) {
-        const currentUserValue = currentUser.preferences[category];
-        const matchUserValue = user.preferences[category];
-        
-        // Skip if either user doesn't have this preference set
-        if (!currentUserValue || !matchUserValue) {
-          console.log(`Skipping ${category} - values missing (current: ${currentUserValue}, match: ${matchUserValue})`);
-          continue;
-        }
-        
-        // Get numerical values
-        const currentUserNum = numericalPrefs[category][currentUserValue];
-        const matchUserNum = numericalPrefs[category][matchUserValue];
-        
-        if (typeof currentUserNum !== 'number' || typeof matchUserNum !== 'number') {
-          console.log(`Invalid numerical mapping for ${category}: ${currentUserValue}=${currentUserNum}, ${matchUserValue}=${matchUserNum}`);
-          continue;
-        }
-        
-        // Calculate how similar they are (closer = better match)
-        const diff = Math.abs(currentUserNum - matchUserNum);
-        const maxDiff = Math.max(...Object.values(numericalPrefs[category])) - 
-                      Math.min(...Object.values(numericalPrefs[category]));
-        const categoryScore = 1 - (diff / maxDiff);
-        
-        console.log(`${category}: ${currentUserValue}(${currentUserNum}) vs ${matchUserValue}(${matchUserNum}) = ${categoryScore.toFixed(2)}`);
-        
-        // Add to total scores
-        similarityScore += categoryScore;
-        maxPossibleScore += 1;
-      }
-      
-      // Calculate final percentage
-      let matchPercentage = 0;
-      if (maxPossibleScore > 0) {
-        matchPercentage = Math.round((similarityScore / maxPossibleScore) * 100);
-      }
-      
-      console.log(`Final match with ${user.username}: ${matchPercentage}%`);
-      
-      const matchData = {
-        _id: user._id,
-        userId: user._id,
-        username: user.username,
-        profile: user.profile,
-        preferences: user.preferences,
-        matchPercentage: matchPercentage,
-        cosineSimilarity: Math.round(matchPercentage * 0.7),
-        jaccardSimilarity: Math.round(matchPercentage * 0.3),
-        isLocationMatch,
-        distance: distance
-      };
-      
-      // Separate into location matches and other matches
-      if (isLocationMatch) {
-        locationMatches.push(matchData);
-      } else {
-        otherMatches.push(matchData);
-      }
+    // Add location filter if specified
+    if (user.preferences.location) {
+      matchQuery['preferences.location'] = user.preferences.location;
     }
     
-    // Sort each group by match percentage (highest first)
-    locationMatches.sort((a, b) => b.matchPercentage - a.matchPercentage);
-    otherMatches.sort((a, b) => b.matchPercentage - a.matchPercentage);
+    // Add gender filter if specified
+    if (user.preferences.gender && user.preferences.gender !== 'Any') {
+      matchQuery['preferences.gender'] = user.preferences.gender;
+    }
     
-    // Combine the sorted matches, with location matches first
-    const sortedMatches = [...locationMatches, ...otherMatches];
+    // Add rent budget filter if specified
+    if (user.preferences.rent) {
+      const userRent = parseInt(user.preferences.rent);
+      matchQuery['preferences.rent'] = { $lte: userRent * 1.2 }; // Allow 20% higher budget
+    }
     
-    if (sortedMatches.length > 0) {
-      console.log("✅ First match example:", {
-        matchPercentage: sortedMatches[0].matchPercentage,
-        username: sortedMatches[0].username,
-        isLocationMatch: sortedMatches[0].isLocationMatch,
-        distance: sortedMatches[0].distance
+    // Find potential matches
+    const potentialMatches = await User.find(matchQuery)
+      .select('username profile preferences')
+      .lean();
+    
+    // Calculate compatibility scores
+    const matches = potentialMatches.map(match => {
+      let score = 0;
+      let totalCategories = 0;
+      
+      // Compare each preference category
+      const categories = ['cleanliness', 'smoking', 'pets', 'workSchedule', 'socialLevel', 'guestPreference', 'music'];
+      
+      categories.forEach(category => {
+        if (user.preferences[category] && match.preferences[category]) {
+          totalCategories++;
+          if (user.preferences[category] === match.preferences[category]) {
+            score += 1;
+          }
+        }
       });
-    }
-    
-    console.log(`✅ Sending ${sortedMatches.length} matches (${locationMatches.length} location matches, ${otherMatches.length} other matches)`);
-    res.status(200).json({ 
-      matches: sortedMatches,
-      locationMatchCount: locationMatches.length,
-      otherMatchCount: otherMatches.length
+      
+      // Calculate final score as percentage
+      const compatibilityScore = totalCategories > 0 ? (score / totalCategories) * 100 : 0;
+      
+      return {
+        ...match,
+        compatibilityScore
+      };
     });
+    
+    // Filter matches with score >= 50% and sort by score
+    const filteredMatches = matches
+      .filter(match => match.compatibilityScore >= 50)
+      .sort((a, b) => b.compatibilityScore - a.compatibilityScore);
+    
+    res.status(200).json({ matches: filteredMatches });
   } catch (error) {
-    console.error('Error finding matches:', error);
-    res.status(500).json({ message: 'Error finding matches' });
+    console.error('Error fetching matches:', error);
+    res.status(500).json({ message: 'Error fetching matches' });
   }
 });
 
@@ -911,6 +809,78 @@ router.get('/conversations', authenticateJWT, async (req, res) => {
   } catch (error) {
     console.error('Error fetching conversations:', error);
     res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Add the friend requests endpoint if it doesn't exist
+router.get('/friend-requests', authenticateJWT, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    
+    // Find the user with their friend requests
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+    
+    console.log('Friend requests for user:', userId);
+    
+    // Return the friend requests directly from the user object
+    return res.status(200).json({
+      requests: user.friendRequests || []
+    });
+  } catch (error) {
+    console.error('Error fetching friend requests:', error);
+    return res.status(500).json({ message: 'Error fetching friend requests' });
+  }
+});
+
+// Add the profile endpoint if it doesn't exist
+router.get('/profile', authenticateJWT, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    
+    // Find the user with their profile data
+    const user = await User.findById(userId)
+      .select('-password')
+      .populate('friends', 'username profile preferences')
+      .populate('friendRequests.from', 'username profile.fullName profile.photoUrl');
+    
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+    
+    console.log('Profile data retrieved for user:', userId);
+    
+    // Return the user object directly (not wrapped in another object)
+    return res.status(200).json(user);
+  } catch (error) {
+    console.error('Error fetching user profile:', error);
+    return res.status(500).json({ message: 'Error fetching user profile' });
+  }
+});
+
+// Add the friends endpoint if it doesn't exist
+router.get('/friends', authenticateJWT, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    
+    // Find the user with their friends
+    const user = await User.findById(userId).populate('friends', 'username profile preferences');
+    
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+    
+    console.log('Friends retrieved for user:', userId);
+    
+    // Return the friends list
+    return res.status(200).json({
+      friends: user.friends || []
+    });
+  } catch (error) {
+    console.error('Error fetching friends:', error);
+    return res.status(500).json({ message: 'Error fetching friends' });
   }
 });
 

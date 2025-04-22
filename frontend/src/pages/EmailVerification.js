@@ -12,6 +12,7 @@ const EmailVerification = () => {
   const [isSuccess, setIsSuccess] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [verificationMethod, setVerificationMethod] = useState("otp"); // otp or link
+  const [verificationStatus, setVerificationStatus] = useState('pending');
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -75,14 +76,14 @@ const EmailVerification = () => {
   }, [navigate, email]);
 
   useEffect(() => {
-    // Check URL for token parameter
-    const queryParams = new URLSearchParams(location.search);
-    const token = queryParams.get('token');
+    const token = new URLSearchParams(location.search).get('token');
     
     if (token) {
       verifyEmailWithToken(token);
+    } else {
+      setVerificationStatus('no-token');
     }
-  }, [location.search, verifyEmailWithToken]); // Added verifyEmailWithToken as dependency
+  }, [location.search, verifyEmailWithToken]);
 
   const handleSendOtp = async (e) => {
     e.preventDefault();
