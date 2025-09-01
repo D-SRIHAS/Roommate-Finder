@@ -1,6 +1,6 @@
-# Roommate Finder
 
-A web application to help users find compatible roommates based on their preferences and lifestyle.
+
+
 
 ## Features
 
